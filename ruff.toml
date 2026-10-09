@@ -1,0 +1,14 @@
+# strata-harness: ruff config. Lint only the harness code we own; upstream
+# serve/ files are excluded from formatting but checked for real errors.
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "SIM", "RET"]
+ignore = ["E731"]
+
+[lint.per-file-ignores]
+"serve/test_*.py" = ["B017"]
+
+[format]
+quote-style = "double"
