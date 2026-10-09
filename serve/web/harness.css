@@ -151,6 +151,11 @@
 /* subagent rows sit indented in the session list */
 .harness-session.is-sub { padding-left: var(--st-s-4); }
 
+/* fork decision (user, 2026-10-09): the About tab is not wanted in
+   strata-harness. Hidden from OUR stylesheet — the upstream button/view
+   markup stays untouched (additive cut points, ADR-0001; easy rebase). */
+#tab-btn-about { display: none; }
+
 @media (max-width: 640px) {
   .harness-layout { grid-template-columns: 1fr; }
   .harness-resizer { display: none; }
