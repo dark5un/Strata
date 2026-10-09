@@ -52,7 +52,7 @@ def make_service_engine(svc, sampling: dict | None = None, cancel_poll: Callable
     """
     sampling = dict(sampling or {})
 
-    def engine(messages: list[dict], tools: list[dict], on_event: Callable[[dict], None] = NOOP) -> EngineResult:
+    def engine(messages: list[dict], tools: list[dict] | None, on_event: Callable[[dict], None] = NOOP) -> EngineResult:
         cancel = threading.Event()
         ids, thinking, max_new = svc.prepare(messages, tools, dict(sampling))
         result = EngineResult()
@@ -114,7 +114,7 @@ def make_http_engine(base_url: str, model: str, api_key: str | None = None,
 
     sampling = dict(sampling or {})
 
-    def engine(messages: list[dict], tools: list[dict], on_event: Callable[[dict], None] = NOOP) -> EngineResult:
+    def engine(messages: list[dict], tools: list[dict] | None, on_event: Callable[[dict], None] = NOOP) -> EngineResult:
         body: dict = {"model": model, "messages": messages, "stream": True, **sampling}
         if tools:
             body["tools"] = [{"type": "function", "function": t} for t in tools]

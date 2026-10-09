@@ -96,13 +96,15 @@ def summarize_oldest(handle: SessionHandle, engine, keep_last_turns: int = 2) ->
     handle.append(ev.COMPACTION_START, {"startSeq": start_seq, "endSeq": end_seq})
     handle.flush()
     try:
-        result = engine([{"role": "user", "content":
-                          "Summarize this agent transcript in <=300 words, keeping every decision, "
-                          "file touched, command run and open task:\n\n" + transcript}], None)
+        raw = engine([{"role": "user", "content":
+                       "Summarize this agent transcript in <=300 words, keeping every decision, "
+                       "file touched, command run and open task:\n\n" + transcript}], None)
     except Exception:  # noqa: BLE001 — bracket closes fail-closed
         handle.append(ev.COMPACTION_END, {"committed": False})
         handle.flush()
         return False
+    from .loop import normalize_result
+    result = normalize_result(raw)
     handle.append(ev.COMPACTION_SUMMARY, {"content": f"[summary of earlier work]\n{result.content}"},
                   surfaceOp={"op": "replace", "startSeq": start_seq, "endSeq": end_seq},
                   sourceEventSeqs=[r["seq"] for r in span])

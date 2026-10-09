@@ -32,6 +32,16 @@ if TYPE_CHECKING:
 MAX_PARALLEL_TOOL_CALLS = 4
 
 
+def normalize_result(raw):
+    """Engines return engine.EngineResult; plain dicts are tolerated (tests, adapters) and converted."""
+    from .engine import EngineResult
+    if isinstance(raw, EngineResult):
+        return raw
+    return EngineResult(content=raw.get("content") or "", reasoning=raw.get("reasoning", ""),
+                        tool_calls=raw.get("tool_calls") or [], usage=raw.get("usage") or {},
+                        finish=raw.get("finish", "stop"))
+
+
 class Cancelled(Exception):
     pass
 
@@ -75,6 +85,11 @@ class Loop:
     max_steps_per_turn: int = 64
     spill: SpillStore | None = None        # oversized tool output -> file + locator
     inbox: Inbox | None = None             # steer/inject between steps
+    cancel: threading.Event = field(default_factory=threading.Event)  # cooperative turn cancel
+
+    def request_cancel(self) -> None:
+        """Cooperative cancellation: checked at step boundaries and handed to tool contexts."""
+        self.cancel.set()
 
     def send(self, content: str) -> dict:
         """Run one full turn for a user message; returns the turn/end data."""
@@ -87,6 +102,8 @@ class Loop:
         steps = 0
         try:
             while steps < self.max_steps_per_turn:
+                if self.cancel.is_set():
+                    raise Cancelled
                 steps += 1
                 if self.inbox is not None:
                     for msg in self.inbox.drain("next-step"):
@@ -101,15 +118,15 @@ class Loop:
                     for t in self.tools.values()
                 ]
                 try:
-                    result = self.engine(messages, tool_schemas)
+                    result = normalize_result(self.engine(messages, tool_schemas))
                 except Exception as exc:                       # noqa: BLE001 - settle, never kill the server
                     self.session.append(ev.STEP_END, {"step": steps, "error": str(exc)})
                     return self._end_turn(ev.REASON_ERROR, {"message": str(exc)})
-                calls = result.get("tool_calls") or []
+                calls = result.tool_calls
                 self.session.append(ev.ASSISTANT_MESSAGE, {
-                    "content": result.get("content"),
+                    "content": result.content,
                     "tool_calls": calls or None,
-                    "usage": result.get("usage", {}),
+                    "usage": result.usage,
                 })
                 if not calls:
                     self.session.append(ev.STEP_END, {"step": steps})
@@ -188,7 +205,7 @@ class Loop:
         def ctx_conclude() -> None:
             concluded["v"] = True
 
-        ctx = ToolRunContext(session=self.session, cancel=threading.Event(), conclude_turn=ctx_conclude)
+        ctx = ToolRunContext(session=self.session, cancel=self.cancel, conclude_turn=ctx_conclude)
 
         def target() -> None:
             try:

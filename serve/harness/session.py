@@ -208,11 +208,18 @@ def fold_surface(rows: list[dict]) -> list[dict]:
     surface: list[dict] = []
     for row in rows:
         op = row.get("surfaceOp", "append")
+        insert_at: int | None = None
         if isinstance(op, dict) and op.get("op") == "replace":
             lo, hi = op["startSeq"], op["endSeq"]
+            # the shadow node lands where the replaced span began, not at the end:
+            # derived history keeps chronological order (summary first, then kept turns)
+            insert_at = next((i for i, n in enumerate(surface) if n["seq"] >= lo), len(surface))
             surface = [n for n in surface if not (lo <= n["seq"] <= hi)]
         if row["type"] in ev.MESSAGE_TYPES or row["type"] == ev.COMPACTION_SUMMARY or row["type"] == ev.TOOL_RESULT:
-            surface.append(row)
+            if insert_at is not None:
+                surface.insert(insert_at, row)
+            else:
+                surface.append(row)
     return surface
 
 
