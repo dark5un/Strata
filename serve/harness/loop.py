@@ -295,8 +295,8 @@ class Loop:
         if asked:
             self.session.append(ev.APPROVAL_ASKED, {"call_id": call_id, "tool": tool.name,
                                                     "preview": req.args_preview})
-        self.session.append(ev.APPROVAL_DECIDED, {"call_id": call_id, "outcome": outcome,
-                                                  "asked": asked})
+        self.session.append(ev.APPROVAL_DECIDED, {"call_id": call_id, "tool": tool.name,
+                                                  "outcome": outcome, "asked": asked})
         return outcome
 
     def _run_tool(self, tool: ToolDefinition, call_id: str, args: dict, concluded: dict) -> bool:

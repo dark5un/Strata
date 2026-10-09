@@ -281,6 +281,7 @@ function openSession(sid) {
   composerEnabled(true);   // boot may have disabled it (no sessions yet): opening one must re-enable
   H.lastSeq = -1;
   H.seenAsks = new Set();
+  H.askMeta = {};
   H.buffer = [];
   H.retryDelay = 1000;
   H.plan = false; H.goal = null;
@@ -470,6 +471,8 @@ function paint(row) {
   } else if (t === "session/title") {
     loadSessions();
   } else if (t === "tool/call") {
+    H.askMeta = H.askMeta || {};
+    H.askMeta[d.call_id] = {tool: d.name, args: d.arguments};   // full payload for the approval fold (replay)
     toolCard(d);
   } else if (t === "tool/result") {
     fillToolCard(d);
@@ -478,10 +481,18 @@ function paint(row) {
     H.seenAsks.add(d.call_id);
     approvalCard(d);
   } else if (t === "approval/asked") {
-    // the durable twin of the synthetic ask, appended at decision time: the
-    // card is already painted (or the pending list brings it) — skip, no duplicate
+    // the durable twin of the synthetic ask: on a live stream the card is
+    // already painted (skip); on replay it is the only record — remember the
+    // payload so the decided row can fold it (M7 review: history must show
+    // what was approved, not just the live moment)
+    H.askMeta = H.askMeta || {};
+    H.askMeta[d.call_id] = {...(H.askMeta[d.call_id] || {}), tool: d.tool, preview: d.preview};
   } else if (t === "approval/decided") {
-    markDecided(d.call_id, d.outcome);
+    if (!markDecided(d.call_id, d.outcome)) {
+      const meta = (H.askMeta || {})[d.call_id] || {};
+      const full = meta.args ? (meta.args.command || JSON.stringify(meta.args, null, 1)) : (meta.preview || "");
+      approvalFold(meta.tool || d.tool || "tool", d.outcome, full);
+    }
   } else if (t === "question/ask") {
     if (H.seenAsks.has(d.qid)) return;
     H.seenAsks.add(d.qid);
@@ -623,7 +634,9 @@ function fillToolCard(d) {
 function setBusy(busy) {
   H.busy = busy;
   const pill = $("h-state");
-  pill.dataset.state = busy ? "generating" : "idle";
+  // while yolo is on, the pill carries the warn colour (D6): working + unattended
+  const yolo = !$("h-yolo").hidden;
+  pill.dataset.state = busy ? (yolo ? "yolo" : "generating") : "idle";
   $("h-state-text").textContent = busy ? "working" : "idle";
   // a live caret at the end of the transcript while the model works (M6 UX)
   const box = $("h-transcript");
@@ -710,20 +723,33 @@ function approvalCard(d) {
 
 function markDecided(callId, outcome) {
   const card = [...document.querySelectorAll(".harness-approval")].find((c) => c.dataset.callId === callId);
-  if (!card) return;
+  if (!card) return false;
   // the decision is made: fold the card to one quiet line (M6 UX: a decided
   // approval must not compete with the live step; the FULL payload stays available)
   const full = [...card.querySelectorAll("pre")].map((p) => p.textContent).join("\n");
   const head = card.querySelector(".harness-approval__head");
   const title = head.querySelector(".card-title")?.textContent || "";
-  card.dataset.decided = outcome;
-  card.innerHTML =
+  approvalFold(title.trim(), outcome, full, card);
+  return true;
+}
+
+// the quiet decided-approval line, shared by the live fold and the replay path
+// (a yolo decision has no ask card: it lands straight as a fold)
+function approvalFold(title, outcome, full, replaceEl) {
+  const html =
     `<details class="harness-approval__fold">` +
     `<summary>${icon(outcome === "deny" ? "error" : "check", "st-icon st-icon--sm")}` +
-    `<span class="tool-call__name">${esc(title.trim())}</span>` +
+    `<span class="tool-call__name">${esc(title)}</span>` +
     `<span class="st-badge ${outcome === "deny" ? "st-badge--error" : "st-badge--reading"}">${esc(outcome)}</span>` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
     `<div class="st-collapse__body"><pre class="tool-call__pre">${esc(full)}</pre></div></details>`;
+  if (replaceEl) {
+    replaceEl.dataset.decided = outcome;
+    replaceEl.innerHTML = html;
+  } else {
+    const node = el("harness-approval", html);
+    node.dataset.decided = outcome;   // the quiet fold style, replay path too
+  }
 }
 
 function questionCard(d) {

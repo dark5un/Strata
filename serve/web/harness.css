@@ -118,8 +118,10 @@
 .harness-approval__full { max-height: 320px; overflow: auto; white-space: pre-wrap;
   font-family: var(--st-font-mono, monospace); font-size: 0.9em; margin: var(--st-s-2) 0 0; }
 .harness-approval .st-collapse > summary { cursor: pointer; }
-/* yolo banner (ADR-0010 / D6): a standing condition, part of the layout */
+/* yolo banner (ADR-0010 / D6): a standing condition, part of the layout;
+   it shares the transcript's 860px reading measure (M7 review) */
 .harness-yolo { display: flex; align-items: center; gap: var(--st-s-2);
+  width: 100%; max-width: 860px; margin-inline: auto; box-sizing: border-box;
   border: 1px solid var(--st-warn); background: var(--st-warn-tint);
   border-radius: var(--st-r-md); padding: var(--st-s-2) var(--st-s-3); }
 .harness-yolo .st-icon { color: var(--st-warn); flex: none; }
