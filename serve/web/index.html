@@ -198,25 +198,32 @@
       </aside>
       <div class="harness-main">
         <div class="harness-bar" id="h-bar">
-          <span class="st-pill" id="h-state" data-state="idle" role="status" aria-live="polite"><span class="st-pill__dot"></span>
-            <span id="h-state-text">idle</span></span>
-          <span class="muted small" id="h-ctx"></span>
-          <span class="st-header__spacer"></span>
-          <label class="muted small" for="h-policy">approvals</label>
-          <select class="st-input" id="h-policy">
-            <option value="ask">ask every time</option>
-            <option value="never">never (deny unless allowlisted)</option>
-            <option value="allowlist">allowlist</option>
-          </select>
-          <input class="st-input" id="h-allowlist" placeholder="patterns: shell:echo*, write_file"
-                 aria-label="Approval allowlist patterns, comma-separated" hidden>
-          <label class="muted small" for="h-preset">preset</label>
-          <select class="st-input" id="h-preset" aria-label="Agent preset for new sessions" title="Applies to new sessions; fork to change a running one"></select>
-          <button class="st-btn st-btn--secondary" id="h-export" title="Export this session (Markdown or raw JSONL)" aria-haspopup="true">Export</button>
-          <button class="st-btn st-btn--secondary" id="h-plan" title="Plan mode: design first, no machine changes" aria-pressed="false">Plan</button>
-          <button class="st-btn st-btn--secondary" id="h-goal" title="Goal mode: keep working toward an objective across turns" aria-pressed="false">Goal</button>
-          <button class="st-btn st-btn--secondary" id="h-fork" title="Fork this session">Fork</button>
-          <button class="st-btn st-btn--danger" id="h-cancel" title="Stop the current turn" hidden>Stop</button>
+          <span class="harness-bar__left">
+            <span class="st-pill" id="h-state" data-state="idle" role="status" aria-live="polite"><span class="st-pill__dot"></span>
+              <span id="h-state-text">idle</span></span>
+            <span class="muted small" id="h-ctx"></span>
+          </span>
+          <span class="harness-bar__right">
+            <span class="harness-bar__group">
+              <label class="muted small" for="h-policy">approvals</label>
+              <select class="st-input" id="h-policy">
+                <option value="ask">ask every time</option>
+                <option value="never">never (deny unless allowlisted)</option>
+                <option value="allowlist">allowlist</option>
+              </select>
+              <input class="st-input" id="h-allowlist" placeholder="patterns: shell:echo*, write_file"
+                     aria-label="Approval allowlist patterns, comma-separated" hidden>
+              <label class="muted small" for="h-preset">preset</label>
+              <select class="st-input" id="h-preset" aria-label="Agent preset for new sessions" title="Applies to new sessions; fork to change a running one"></select>
+            </span>
+            <span class="harness-bar__group">
+              <button class="st-btn st-btn--secondary" id="h-export" title="Export this session (Markdown or raw JSONL)" aria-haspopup="true">Export</button>
+              <button class="st-btn st-btn--secondary" id="h-plan" title="Plan mode: design first, no machine changes" aria-pressed="false">Plan</button>
+              <button class="st-btn st-btn--secondary" id="h-goal" title="Goal mode: keep working toward an objective across turns" aria-pressed="false">Goal</button>
+              <button class="st-btn st-btn--secondary" id="h-fork" title="Fork this session">Fork</button>
+              <button class="st-btn st-btn--danger" id="h-cancel" title="Stop the current turn" hidden>Stop</button>
+            </span>
+          </span>
         </div>
         <div class="harness-transcript" id="h-transcript"></div>
         <div class="harness-empty" aria-hidden="true">

@@ -36,8 +36,17 @@
 /* one shared measure: bar, transcript and composer all sit on the Chat tab's 860px column */
 .harness-bar { display: flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; position: relative;
                width: 100%; max-width: 860px; margin-inline: auto; }
+/* left = state, right = settings + actions: when the bar wraps, the right
+   cluster stays right-aligned on both rows (no ragged staircase, viewport matrix) */
+.harness-bar__left { display: inline-flex; align-items: center; gap: var(--st-s-2); }
+.harness-bar__right { display: inline-flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap;
+                      margin-left: auto; justify-content: flex-end; }
 .harness-bar select.st-input { width: auto; height: 42px; }   /* same height as the bar's st-btn */
 .harness-bar input.st-input { flex: 1; min-width: 140px; height: 42px; }
+/* groups wrap as units: at tight widths the settings cluster and the action
+   buttons each stay on one row instead of a ragged staircase (viewport matrix) */
+.harness-bar__group { display: inline-flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; }
+.harness-bar__group + .harness-bar__group { margin-left: var(--st-s-3); }
 .harness-ctx--warn { color: var(--st-warn-text); }
 .harness-ctx .st-icon { vertical-align: -2px; color: var(--st-warn); }
 

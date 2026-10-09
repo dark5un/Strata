@@ -481,7 +481,7 @@ function composerEnabled(on) {
   $("h-input").disabled = !on;
   $("h-input").placeholder = on ? "Give the agent a task…" : "Start or open a session first";
   // the send button must not glow green when the composer is disabled (UX review)
-  $("h-composer button[type=submit]").disabled = !on;
+  document.querySelector("#h-composer button[type=submit]").disabled = !on;
   // the session state pill only means something with a session open: the header
   // pill already shows the server state, don't duplicate it in the empty tab
   $("h-state").hidden = !on && !H.busy;
