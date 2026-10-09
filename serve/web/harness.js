@@ -73,6 +73,8 @@ function openSession(sid) {
   H.seenAsks = new Set();
   H.buffer = [];
   H.retryDelay = 1000;
+  H.plan = false; H.goal = null;
+  setPlanChip(false); setGoalChip(null, "");   // no stale chips between sessions
   setBusy(false);
   $("h-transcript").innerHTML = `<p class="muted">Loading session ${esc(sid)}&hellip;</p>`;
   loadSessions();
@@ -93,6 +95,8 @@ function startStream() {
       $("h-transcript").innerHTML = "";
       H.lastSeq = -1;
       H.seenAsks = new Set();
+      H.plan = false; H.goal = null;
+      setPlanChip(false); setGoalChip(null, "");
       for (;;) {
         const {value, done} = await reader.read();
         if (done) break;
@@ -104,7 +108,7 @@ function startStream() {
           const line = frame.split("\n").find((l) => l.startsWith("data: "));
           if (!line) continue;                       // ": keep-alive" comment frames
           let row;
-          try { row = JSON.parse(line.slice(6)); } catch (e) { continue; }
+          try { row = JSON.parse(line.slice(6)); } catch { continue; }
           if (row.seq >= 0 && row.seq > H.lastSeq + 1 && H.lastSeq >= 0) { reconcile(); continue; }
           if (H.reconciling) H.buffer.push(row);
           else paint(row);
@@ -123,9 +127,10 @@ function streamEnded() {
 }
 
 function streamError(message) {
-  $("h-transcript").innerHTML = `<p class="muted">The harness stream failed (${esc(message)}).
-    <button class="st-btn st-btn--secondary" id="h-retry">Retry</button></p>`;
-  $("h-retry").onclick = () => startStream();
+  // keep the painted history: an error row with Retry, not a wiped transcript
+  const row = el("harness-note", `<span class="muted small">${icon("error", "st-icon st-icon--sm")} the harness stream failed (${esc(message)}). ` +
+    `<button class="st-btn st-btn--secondary" id="h-retry">Retry</button></span>`);
+  row.querySelector("#h-retry").onclick = () => startStream();
 }
 
 async function reconcile() {
@@ -142,7 +147,7 @@ async function reconcile() {
     for (const row of buffered) paint(row);
     H.busy = busy; setBusy(busy);
     H.retryDelay = 1000;
-  } catch (e) { /* the next frame or a reload retries */ }
+  } catch (e) { toast("warn", "Harness", `reconnect failed: ${e.message}`); /* the next frame or a reload retries */ }
   H.reconciling = false;
 }
 
@@ -201,6 +206,14 @@ function paint(row) {
     H.busy = false; setBusy(false);
     if (d.reason !== "completed")
       el("harness-note", `<span class="muted small">turn ${esc(d.reason)}${d.message ? `: ${esc(String(d.message)).slice(0, 200)}` : ""}</span>`);
+  } else if (t === "plan/mode") {
+    setPlanChip(!!d.active);
+    el("harness-note", `<span class="muted small">${icon("layers", "st-icon st-icon--sm")} plan mode ${d.active ? "on" : "off"}</span>`);
+  } else if (t === "goal/change") {
+    setGoalChip(d.phase, d.objective);
+    el("harness-note", `<span class="muted small">${icon("bolt", "st-icon st-icon--sm")} goal ${esc(d.phase)}: ${esc(String(d.objective || "").slice(0, 120))}</span>`);
+  } else if (t === "context/pressure") {
+    el("harness-note", `<span class="muted small">${icon("warning", "st-icon st-icon--sm")} context ${Math.round((d.pressure || 0) * 100)}% — near the limit</span>`);
   } else if (t === "session/idle") {
     // synthetic: lands after busy=False on the server — the list's badge is fresh now
     setBusy(false);
@@ -208,7 +221,7 @@ function paint(row) {
   } else if (t === "compaction/summary") {
     el("harness-note", `<span class="muted small">${icon("layers", "st-icon st-icon--sm")} earlier context compacted</span>`);
   } else if (t === "inbox/queued") {
-    el("harness-note", `<span class="muted small">queued for the next turn: ${esc(d.content || "")}</span>`);
+    el("harness-note", `<span class="muted small">${icon("send", "st-icon st-icon--sm")} ${d.preset === "steer" ? "steering this turn: " : "queued for the next turn: "}${esc(String(d.content || "").slice(0, 200))}</span>`);
   }
   // unknown event types are skipped on purpose (forward compatibility)
 }
@@ -235,12 +248,24 @@ function fillToolCard(d) {
   if (!body) return;
   body.insertAdjacentHTML("beforeend",
     `<div class="tool-call__label">${d.is_error ? "Error" : "Result"}` +
-    `${d.spill ? ` &middot; full output: ${esc(d.spill.locator)}` : ""}</div>` +
+    `${d.spill ? ` &middot; <span class="st-badge st-badge--reading">spilled</span> ` +
+      `<code class="harness-spill-locator" title="copy locator">${esc(d.spill.locator)}</code>` : ""}</div>` +
     `<pre class="tool-call__pre">${esc(d.text)}</pre>`);
-  const badge = details.querySelector(".st-badge");
+  if (d.spill) {
+    // the summary line stays visible when collapsed: say "spilled" there too
+    details.querySelector("summary").insertAdjacentHTML("beforeend",
+      ` <span class="st-badge st-badge--reading">spilled</span>`);
+    const loc = body.querySelector(".harness-spill-locator");
+    loc.onclick = () => {
+      navigator.clipboard.writeText(d.spill.locator)
+        .then(() => toast("success", "Copied", "paste it to the agent with spill_read"))
+        .catch(() => {});
+    };
+  }
+  const stateBadge = details.querySelector("summary .st-badge");
   details.dataset.state = d.is_error ? "error" : "done";
-  badge.className = "st-badge " + (d.is_error ? "st-badge--error" : "st-badge--reading");
-  badge.textContent = d.is_error ? "error" : "done";
+  stateBadge.className = "st-badge " + (d.is_error ? "st-badge--error" : "st-badge--reading");
+  stateBadge.textContent = d.is_error ? "error" : "done";
   if (d.is_error) details.open = true;
 }
 
@@ -250,6 +275,9 @@ function setBusy(busy) {
   pill.dataset.state = busy ? "generating" : "idle";
   $("h-state-text").textContent = busy ? "working" : "idle";
   $("h-cancel").hidden = !busy;
+  // steering must be legible before the send, not after (UX review)
+  if (!$("h-input").disabled)
+    $("h-input").placeholder = busy ? "working — Enter steers this turn" : "Give the agent a task…";
 }
 
 function showUsage(u) {
@@ -342,8 +370,77 @@ function questionCard(d) {
 function composerEnabled(on) {
   $("h-input").disabled = !on;
   $("h-input").placeholder = on ? "Give the agent a task…" : "Start or open a session first";
+  // the whole session-scoped bar is honest about the empty state (UX review)
+  for (const id of ["h-plan", "h-goal", "h-fork", "h-policy", "h-allowlist"]) $(id).disabled = !on;
 }
 
+// plan / goal mode chips + buttons (ADR-0007). State is tracked in H (not read
+// back from the DOM) so a slow SSE echo can't race a click.
+function setPlanChip(on) {
+  H.plan = on;
+  const b = $("h-plan");
+  b.classList.toggle("is-on", on);
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.setAttribute("aria-label", on ? "Plan mode on — click to leave" : "Plan mode off — click to enter");
+}
+function setGoalChip(phase, objective) {
+  H.goal = phase ? {phase, objective: objective || ""} : null;
+  const b = $("h-goal");
+  b.classList.toggle("is-on", phase === "active");
+  b.setAttribute("aria-pressed", phase === "active" ? "true" : "false");
+  const label = phase ? `Goal ${phase}${objective ? `: ${String(objective).slice(0, 80)}` : ""}`
+                      : "Set a goal";
+  b.textContent = phase ? `Goal · ${phase}` : "Goal";
+  b.setAttribute("aria-label", label);
+  b.title = label;
+}
+$("h-plan").onclick = async () => {
+  if (!H.sid) return;
+  try { await hpost(`harness/session/${H.sid}/mode`, {plan: !H.plan}); }
+  catch (e) { toast("error", "Plan mode", e.message); }
+};
+
+// goal popover: an inline st-input instead of a native prompt() (UX review:
+// off-system, inaccessible). Enter submits, Esc closes, buttons for mouse.
+function goalPopover() {
+  closeGoalPopover();
+  const pop = document.createElement("div");
+  pop.id = "h-goal-pop";
+  pop.className = "st-card harness-popover";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Set a goal");
+  pop.innerHTML = `<label class="muted small" for="h-goal-input">Objective (the agent keeps working toward it each turn)</label>` +
+    `<input class="st-input" id="h-goal-input" placeholder="ship the harness demo…" aria-label="Goal objective">` +
+    `<div class="harness-popover__actions">` +
+    `<button class="st-btn st-btn--primary" id="h-goal-save">Start goal</button>` +
+    `<button class="st-btn st-btn--secondary" id="h-goal-pause">Pause active goal</button>` +
+    `<button class="st-btn st-btn--icon" id="h-goal-close" title="Close" aria-label="Close">✕</button></div>`;
+  $("h-bar").appendChild(pop);
+  const input = $("h-goal-input");
+  input.focus();
+  const submit = async (body) => {
+    try { await hpost(`harness/session/${H.sid}/mode`, body); closeGoalPopover(); }
+    catch (e) { toast("error", "Goal mode", e.message); }
+  };
+  $("h-goal-save").onclick = () => {
+    const objective = input.value.trim();
+    if (!objective) { input.focus(); return; }
+    submit({goal: {objective, phase: "active", maxRounds: 8}});
+  };
+  $("h-goal-pause").onclick = () => submit({goal: {objective: (H.goal && H.goal.objective) || "", phase: "paused"}});
+  $("h-goal-close").onclick = closeGoalPopover;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("h-goal-save").click(); }
+    if (e.key === "Escape") closeGoalPopover();
+  });
+}
+function closeGoalPopover() {
+  const pop = document.getElementById("h-goal-pop");
+  if (pop) pop.remove();
+}
+$("h-goal").onclick = () => { if (H.sid) goalPopover(); };
+
+// composer: idle -> new turn; busy -> steer the running turn (dsh semantics)
 $("h-composer").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("h-input").value.trim();
@@ -351,7 +448,8 @@ $("h-composer").onsubmit = async (e) => {
   if (!H.sid) { toast("info", "No session", "Start one with the + button."); return; }
   $("h-input").value = "";
   try {
-    await hpost(`harness/session/${H.sid}/message`, {content: text});
+    const body = {content: text, target: H.busy ? "steer" : "auto"};
+    await hpost(`harness/session/${H.sid}/message`, body);
   } catch (err) { toast("error", "Send", err.message); }
 };
 // parity with the Chat composer: Enter sends, Shift+Enter is a new line

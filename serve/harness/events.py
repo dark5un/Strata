@@ -43,6 +43,13 @@ COMPACTION_END = "compaction/end"
 # fork boundary marker
 SESSION_END_SEED = "session/end-seed"
 
+# modes (log-only state, ADR-0007): plan/mode {active}, goal/change {objective, phase, maxRounds}
+PLAN_MODE = "plan/mode"
+GOAL_CHANGE = "goal/change"
+
+# meter-driven compaction notice (ADR-0006): why the loop compacted right now
+CONTEXT_PRESSURE = "context/pressure"
+
 # turn/end reasons (durable taxonomy; crash repair appends closers, never truncates)
 REASON_COMPLETED = "completed"
 REASON_ABORTED = "aborted"
@@ -73,4 +80,5 @@ _KNOWN = frozenset({
     TURN_START, TURN_END, STEP_START, STEP_END, USER_MESSAGE, ASSISTANT_MESSAGE,
     TOOL_CALL, TOOL_RESULT, REQUEST_HEADER, APPROVAL_ASKED, APPROVAL_DECIDED,
     COMPACTION_START, COMPACTION_SUMMARY, COMPACTION_END, SESSION_END_SEED,
+    PLAN_MODE, GOAL_CHANGE, CONTEXT_PRESSURE,
 })

@@ -136,6 +136,29 @@ class SessionCommandTests(RoutesBase):
         code, _ = self.post("/harness/session/nosuch/message", {"content": "x"})
         self.assertEqual(code, 404)
 
+    def test_mode_route_plan_and_goal(self):
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        code, _ = self.post(f"/harness/session/{sid}/mode", {"plan": True})
+        self.assertEqual(code, 200)
+        code, _ = self.post(f"/harness/session/{sid}/mode",
+                            {"goal": {"objective": "ship", "phase": "active", "maxRounds": 3}})
+        self.assertEqual(code, 200)
+        ev = self.wait_idle(sid)
+        types = [r["type"] for r in ev["events"]]
+        self.assertIn("plan/mode", types)
+        self.assertIn("goal/change", types)
+        # validation: empty mode body, bad plan type, bad goal type
+        for bad in ({}, {"plan": "yes"}, {"goal": "ship"}):
+            code, _ = self.post(f"/harness/session/{sid}/mode", bad)
+            self.assertEqual(code, 400)
+
+    def test_message_target_validation(self):
+        _, created = self.post("/harness/session", {})
+        code, _ = self.post(f"/harness/session/{created['id']}/message",
+                            {"content": "x", "target": "nowhere"})
+        self.assertEqual(code, 400)
+
     def test_fork_and_cancel_and_policy(self):
         _, created = self.post("/harness/session", {})
         sid = created["id"]
