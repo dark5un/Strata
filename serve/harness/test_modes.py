@@ -245,6 +245,33 @@ class GoalDriverTests(unittest.TestCase):
         rows = mgr.live(sid).handle.events
         self.assertEqual([r for r in rows if r["type"] == ev.USER_MESSAGE and r["data"].get("source") == "goal"], [])
 
+    def test_mode_tools_are_ungated(self):
+        # regression: goal/plan_mode/spill_read mutate only session state; an ask
+        # for them would stall the goal driver waiting on a human
+        box = {"i": 0}
+        script = [
+            EngineResult(tool_calls=[{"id": "g1", "name": "goal",
+                                      "arguments": {"phase": "active", "objective": "quiet"}}],
+                         usage={"prompt_tokens": 5, "completion_tokens": 2}),
+            EngineResult(content="done", usage={"prompt_tokens": 6, "completion_tokens": 2}),
+        ]
+
+        def factory():
+            def engine(messages, tools, on_event=None):
+                i = box["i"]
+                box["i"] += 1
+                return script[i] if i < len(script) else EngineResult(content="done", usage={})
+            return engine
+        mgr = HarnessManager(self.root / "sessions", factory,
+                             spill_dir=self.root / "spill", workspace_root=self.root)
+        sid = mgr.new()
+        mgr.send(sid, "set a goal")
+        _wait_idle(mgr, sid, timeout=10)
+        rows = mgr.live(sid).handle.events
+        self.assertEqual([r for r in rows if r["type"] == ev.APPROVAL_ASKED], [])
+        for name in ("goal", "plan_mode", "spill_read"):
+            self.assertFalse(mgr.live(sid).loop.tools[name].needs_approval)
+
 
 class SteerTests(unittest.TestCase):
     def setUp(self):

@@ -111,6 +111,7 @@ class HarnessManager:
         tools = {t.name: t for t in default_registry(board=board, root=self.workspace_root)}
         spill_store = SpillStore(self.spill_dir / session_id)
         for extra in (spill_read_tool(spill_store), plan_mode_tool(board), goal_tool()):
+            extra.needs_approval = False      # session-state tools: they touch no machine state
             tools[extra.name] = extra
         loop = Loop(engine=self.engine_factory(), tools=tools, session=h,
                     approval=broker.request,
