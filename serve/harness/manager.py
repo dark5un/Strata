@@ -325,6 +325,19 @@ class HarnessManager:
             return
         self._start(parent, text, source="subagent")
 
+    def pending_child_asks(self, session_id: str) -> list[dict]:
+        """Relayed asks (ADR-0008): pending approvals of live children, tagged
+        with their session id — a reconnecting parent client redraws them."""
+        with self._lock:
+            parent = self._live.get(session_id)
+            kids = [self._live.get(c) for c in (parent.children if parent else ())]
+        out = []
+        for child in kids:
+            if child is not None and child.channel is not None:
+                for a in child.channel.pending():
+                    out.append({**a, "session": child.session_id})
+        return out
+
     def answer(self, session_id: str, qid: str, answer: dict) -> bool:
         return self.live(session_id).board.answer(qid, answer)
 
@@ -425,6 +438,9 @@ class ApprovalChannel:
     def deliver(self, call_id: str, outcome: str) -> bool:
         with self._lock:
             dq = self._decisions.get(call_id)
+            # a decided ask stops being pending right here: a reconnecting
+            # client must not redraw a card the human already answered
+            self._asks.pop(call_id, None)
         if dq is None:
             return False
         dq.put({"outcome": outcome})

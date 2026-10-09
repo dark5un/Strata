@@ -95,6 +95,9 @@ def handle_get(handler, svc, path: str) -> None:
         # only land once answered): a reconnecting client needs them to redraw cards
         pending = [{"type": "approval/ask", "seq": -1, "time": None, "data": a}
                    for a in live.channel.pending()]
+        # relayed child asks (ADR-0008): the parent redraws them on reconnect too
+        pending += [{"type": "approval/ask", "seq": -1, "time": None, "data": a}
+                    for a in mgr.pending_child_asks(sid)]
         pending += [{"type": "question/ask", "seq": -1, "time": None,
                      "data": {"qid": q.qid, "question": q.question, "options": q.options, "multi": q.multi}}
                     for q in live.board.pending()]
@@ -123,8 +126,10 @@ def _stream(handler, mgr, sid: str) -> None:
     sub: queue.Queue = mgr.subscribe(sid)          # subscribe replays the log first
     seen_questions: set[str] = set()
     # reconnect: unanswered asks are still live — replay them and remember them
-    seen_asks = {ask["call_id"] for ask in live.channel.pending()}
-    for ask in live.channel.pending():
+    # (own asks plus relayed child asks, ADR-0008)
+    all_asks = list(live.channel.pending()) + mgr.pending_child_asks(sid)
+    seen_asks = {ask["call_id"] for ask in all_asks}
+    for ask in all_asks:
         _sse_row(handler, {"type": "approval/ask", "seq": -1, "time": time.time(), "data": ask})
     last_write = time.monotonic()
     try:

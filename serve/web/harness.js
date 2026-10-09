@@ -324,7 +324,7 @@ function subagentCard(d) {
     : state === "aborted" || state === "error" || state === "blocked" ? "st-badge--error" : "st-badge--generating";
   const card = el("harness-subagent",
     `<div class="harness-subagent__head">${icon("experts", "st-icon st-icon--sm")}` +
-    `<span class="card-title">Subagent${child ? ` · <button type=\"button\" class=\"harness-session-link\" data-sid=\"${esc(child)}\" title=\"open the child session\">${esc(child)}</button>` : ""}</span>` +
+    `<h3 class="card-title">Subagent${child ? ` · <button type=\"button\" class=\"harness-session-link\" data-sid=\"${esc(child)}\" title=\"open the child session\">${esc(child)}</button>` : ""}</h3>` +
     `<span class="st-badge ${badge}">${esc(state)}</span></div>` +
     `<div class="harness-subagent__body">${esc(content.replace(/^\[subagent \S+ \w+\]\n?/, ""))}</div>`);
   const link = card.querySelector(".harness-session-link");
@@ -380,6 +380,10 @@ function setBusy(busy) {
   pill.dataset.state = busy ? "generating" : "idle";
   $("h-state-text").textContent = busy ? "working" : "idle";
   $("h-cancel").hidden = !busy;
+  // stop cascades to running subagents (ADR-0008): say so when they exist
+  const kids = H.sessions.filter((s) => s.parent === H.sid && s.busy).length;
+  $("h-cancel").title = kids ? `Stop the current turn (and ${kids} running subagent${kids > 1 ? "s" : ""})`
+                             : "Stop the current turn";
   // steering must be legible before the send, not after (UX review)
   if (!$("h-input").disabled)
     $("h-input").placeholder = busy ? "working — Enter steers this turn" : "Give the agent a task…";

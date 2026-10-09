@@ -79,6 +79,7 @@
   background: var(--st-accent-tint);
 }
 .harness-subagent__head { display: flex; align-items: center; gap: var(--st-s-2); }
+.harness-subagent__head .card-title { margin: 0; font-size: inherit; }
 .harness-subagent__body { margin-top: var(--st-s-2); white-space: pre-wrap; }
 .harness-session-link {
   border: 0; background: transparent; padding: 0; font: inherit;

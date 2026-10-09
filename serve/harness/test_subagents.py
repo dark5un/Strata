@@ -170,6 +170,55 @@ class SubagentTests(unittest.TestCase):
         self.assertNotIn("shell", tools)
         self.assertIn("read_file", tools)
 
+    def test_child_approval_reconnect_replays_relayed_ask(self):
+        # a parent client reconnecting while a child ask is pending must get it
+        # through pending_child_asks, tagged with the child session
+        parent_script = [
+            _calls(("delegate", {"task": "run it", "preset": "default"})),
+            EngineResult(content="wrapping up", usage={"prompt_tokens": 1, "completion_tokens": 1}),
+        ]
+        child_script = [
+            _calls(("shell", {"command": "echo hi"})),
+            EngineResult(content="ran it", usage={"prompt_tokens": 1, "completion_tokens": 1}),
+        ]
+
+        calls = {"n": 0}
+
+        def factory():
+            script = parent_script if calls["n"] == 0 else child_script
+            calls["n"] += 1
+            return scripted(script)()
+
+        mgr = HarnessManager(self.root / "sessions", factory,
+                             spill_dir=self.root / "spill", workspace_root=self.root)
+        sid = mgr.new()
+        mgr.send(sid, "go")
+        parent = mgr.live(sid)
+        ask = None
+        import time
+        end = time.time() + 8
+        while time.time() < end and ask is None:
+            try:
+                ask = parent.approvals.get(timeout=0.2)
+            except Exception:  # queue.Empty
+                continue
+        assert ask is not None
+        pending = mgr.pending_child_asks(sid)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["call_id"], ask["call_id"])
+        self.assertEqual(pending[0]["session"], ask["session"])
+        # decide via the parent resolves it; the pending list then empties
+        self.assertTrue(mgr.decide(sid, ask["call_id"], "deny"))
+        self.assertEqual(mgr.pending_child_asks(sid), [])
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if any(r["type"] == ev.USER_MESSAGE and r["data"].get("source") == "subagent"
+                   for r in mgr.live(sid).handle.events):
+                break
+            time.sleep(0.05)
+        wait_idle(mgr, sid, timeout=10.0)
+        wait_idle(mgr, ask["session"], timeout=10.0)
+
     def test_child_approval_relays_to_parent_stream(self):
         parent_script = [
             _calls(("delegate", {"task": "run it", "preset": "default"})),
