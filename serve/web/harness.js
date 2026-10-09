@@ -480,6 +480,11 @@ function questionCard(d) {
 function composerEnabled(on) {
   $("h-input").disabled = !on;
   $("h-input").placeholder = on ? "Give the agent a task…" : "Start or open a session first";
+  // the send button must not glow green when the composer is disabled (UX review)
+  $("h-composer button[type=submit]").disabled = !on;
+  // the session state pill only means something with a session open: the header
+  // pill already shows the server state, don't duplicate it in the empty tab
+  $("h-state").hidden = !on && !H.busy;
   // the whole session-scoped bar is honest about the empty state (UX review)
   for (const id of ["h-plan", "h-goal", "h-fork", "h-policy", "h-allowlist", "h-export"]) $(id).disabled = !on;
 }
@@ -563,12 +568,20 @@ document.addEventListener("keydown", (e) => {
 });
 
 // composer: idle -> new turn; busy -> steer the running turn (dsh semantics)
+// parity with the Chat composer: the textarea grows with the text (app.js autosize)
+function autosizeHarness() {
+  const t = $("h-input");
+  t.style.height = "auto";
+  t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`;
+}
+$("h-input").addEventListener("input", autosizeHarness);
 $("h-composer").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("h-input").value.trim();
   if (!text) return;
   if (!H.sid) { toast("info", "No session", "Start one with the + button."); return; }
   $("h-input").value = "";
+  autosizeHarness();
   try {
     const body = {content: text, target: H.busy ? "steer" : "auto"};
     await hpost(`harness/session/${H.sid}/message`, body);

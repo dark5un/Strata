@@ -219,10 +219,17 @@
           <button class="st-btn st-btn--danger" id="h-cancel" title="Stop the current turn" hidden>Stop</button>
         </div>
         <div class="harness-transcript" id="h-transcript"></div>
+        <div class="harness-empty" aria-hidden="true">
+          <div>
+            <div class="chat-empty__title">Give the agent a task</div>
+            <div class="chat-empty__sub">Tools run on this PC, behind your approvals. Nothing leaves it.</div>
+          </div>
+        </div>
         <form class="st-composer" id="h-composer">
           <textarea id="h-input" rows="2" placeholder="Give the agent a task&hellip;" aria-label="Message"></textarea>
           <div class="st-composer__bar">
-            <button type="submit" class="st-btn st-btn--icon" title="Send" aria-label="Send">
+            <span class="spacer"></span>
+            <button type="submit" class="st-btn st-btn--primary st-btn--send" title="Send" aria-label="Send">
               <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
           </div>
         </form>

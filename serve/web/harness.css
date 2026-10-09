@@ -5,11 +5,12 @@
 
 .harness-layout {
   display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: var(--st-s-3);
+  grid-template-columns: 240px 1fr;
+  gap: var(--st-s-4);
   align-items: stretch;
   flex: 1;
   min-height: 0;
+  padding: var(--st-s-5) var(--st-s-6) var(--st-s-6);
 }
 .harness-sessions { overflow-y: auto; min-height: 0; }
 .harness-session {
@@ -32,9 +33,11 @@
 .harness-session span:first-of-type { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .harness-main { display: flex; flex-direction: column; gap: var(--st-s-2); min-width: 0; min-height: 0; }
-.harness-bar { display: flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; position: relative; }
-.harness-bar select.st-input { width: auto; padding: var(--st-s-1) var(--st-s-2); }
-.harness-bar input.st-input { flex: 1; min-width: 140px; }
+/* one shared measure: bar, transcript and composer all sit on the Chat tab's 860px column */
+.harness-bar { display: flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; position: relative;
+               width: 100%; max-width: 860px; margin-inline: auto; }
+.harness-bar select.st-input { width: auto; height: 42px; }   /* same height as the bar's st-btn */
+.harness-bar input.st-input { flex: 1; min-width: 140px; height: 42px; }
 .harness-ctx--warn { color: var(--st-warn-text); }
 .harness-ctx .st-icon { vertical-align: -2px; color: var(--st-warn); }
 
@@ -47,6 +50,18 @@
   padding: var(--st-s-1) 0;
   min-height: 0;
 }
+/* reading measure: transcript rows share the Chat tab's 860px column */
+.harness-transcript > * { width: 100%; max-width: 860px; margin-inline: auto; }
+
+/* empty state: shown while the transcript has no rows (no session open) */
+.harness-empty { display: none; flex: 1; align-items: center; justify-content: center; text-align: center; }
+.harness-transcript:empty { display: none; }
+.harness-transcript:empty + .harness-empty { display: flex; }
+
+/* composer: stretch to the Chat tab's measure (app.css centers at 860px, which
+   collapses a flex child to content width — pin the width explicitly) */
+.harness-main .st-composer { width: 100%; max-width: 860px; margin-inline: auto; }
+.harness-main .st-composer textarea { max-height: 40vh; }
 
 .harness-approval, .harness-question, .harness-note {
   border: 1px solid var(--st-line);
