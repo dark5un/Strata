@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import events as ev
-from .approval import ApprovalBroker, ApprovalPolicy, fold_policy
+from .approval import ApprovalBroker, ApprovalPolicy, fold_policy, targets_protected
 from .compaction import orphaned_bracket, prune_tool_results
 from .inbox import Inbox
 from .loop import Loop
@@ -80,7 +80,7 @@ class HarnessManager:
     def __init__(self, sessions_dir: Path, engine_factory, *, spill_dir: Path | None = None,
                  workspace_root: Path | None = None, metrics_fn=None,
                  presets_dir: Path | None = None, sampling: dict | None = None,
-                 mcp_hub=None) -> None:
+                 mcp_hub=None, plugins_dir: Path | None = None) -> None:
         self.dir = sessions_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.engine_factory = engine_factory          # () -> engine callable
@@ -90,6 +90,9 @@ class HarnessManager:
         self.presets_dir = presets_dir                # None -> user dir + bundled (ADR-0011)
         self.sampling = dict(sampling or {})          # rides the request/header envelope (M7b)
         self.mcp_hub = mcp_hub                        # serve/mcp.py's McpHub when MCP servers are set (ADR-0012)
+        self.plugins_dir = plugins_dir                # None = plugins off (ADR-0014: opt-in at server start)
+        self._plugin_failures: list[dict] = []        # last attach's import/contract errors (panel state)
+        self._plugin_tool_names: list[str] = []       # last attach's reviewed plugin tool names
         self._live: dict[str, Live] = {}
         self._lock = threading.RLock()   # reentrant: live() -> _attach() reads the live map for parent lookups
 
@@ -167,6 +170,9 @@ class HarnessManager:
                         names = {t.name for t in default_registry(root=self.workspace_root)}
                         if self.mcp_hub is not None:
                             names |= {t["name"] for t in self.mcp_hub.template_tools()}
+                        if self.plugins_dir is not None:
+                            # reviewed plugin tools exist in the parent's set too (ADR-0014)
+                            names |= set(self._plugin_tool_names)
                         parent_effective = {n for n in names if ppreset.permits(n)}
                 except Exception:  # noqa: BLE001 - unreadable parent log: no extra restriction
                     pass
@@ -177,6 +183,29 @@ class HarnessManager:
             from .tools.mcp import mcp_tools
             for t in mcp_tools(self.mcp_hub):
                 tools.setdefault(t.name, t)
+        # ADR-0014: reviewed plugins only (hash-gated). Tools register into the
+        # same dict — a collision with a built-in is a hard failure for that
+        # plugin, never a shadow. Hooks ride the ADR-0013 lists. Snapshotted
+        # at attach like MCP tools: a review takes effect for new sessions.
+        plugin_tools: set[str] = set()
+        plugin_hooks: dict[str, list] = {}
+        if self.plugins_dir is not None:
+            from . import plugins as _plugins
+            loaded, failures = _plugins.load_plugins(self.plugins_dir)
+            self._plugin_failures = failures
+            for p in loaded:
+                try:
+                    for t in p.tools:
+                        if t.name in tools:
+                            raise ValueError(f"plugin {p.name!r} tool {t.name!r} collides with an existing tool")
+                        tools[t.name] = t
+                        plugin_tools.add(t.name)
+                except Exception as exc:  # noqa: BLE001 - contract failure: skip this plugin only
+                    self._plugin_failures.append({"name": p.name, "sha256": p.sha256, "error": str(exc)})
+                    continue
+                for key in ("pre_step", "pre_tool", "post_tool"):
+                    plugin_hooks.setdefault(key, []).extend(p.hooks.get(key, []))
+            self._plugin_tool_names = sorted(plugin_tools)
         spill_store = SpillStore(self.spill_dir / session_id)
         for extra in (spill_read_tool(spill_store), plan_mode_tool(board), goal_tool()):
             extra.needs_approval = False      # session-state tools: they touch no machine state
@@ -208,8 +237,18 @@ class HarnessManager:
         loop._policy = policy                     # type: ignore[attr-defined]  # routes update it
         loop._broker = broker                     # type: ignore[attr-defined]
         loop._board = board                       # type: ignore[attr-defined]
+        # ADR-0014 gate 2: writes into the plugin dir always ask, whatever the
+        # session's policy mode (the durable policy event never carries this —
+        # it is server-scoped, set fresh at every attach).
+        if self.plugins_dir is not None:
+            broker.policy.protected_dirs = [self.plugins_dir]
+            channel.protected_dirs = [self.plugins_dir]   # the card's `plugin write` chip (D4)
+        for key in ("pre_step", "pre_tool", "post_tool"):   # ADR-0013 hook surface
+            getattr(loop, key).extend(plugin_hooks.get(key, []))
         live = Live(session_id=session_id, handle=h, loop=loop, board=board, approvals=approvals,
                     channel=channel, deliver=channel.deliver)
+        if plugin_tools:
+            channel.plugin_tools = plugin_tools   # the ask card gets a `plugin` chip (ADR-0014)
         live_holder["v"] = live
         h.on_append = live.publish                # every durable row streams the moment it lands
         return live
@@ -390,6 +429,25 @@ class HarnessManager:
             return
         self._start(parent, text, source="subagent")
 
+    def plugin_failures(self) -> list[dict]:
+        """Import/contract errors from the most recent attach (panel state, ADR-0014-7)."""
+        return list(self._plugin_failures)
+
+    def refresh_plugins(self) -> None:
+        """Re-run the reviewed load after a human review/disable (POST path):
+        keeps the cached tool names honest without waiting for a new attach."""
+        if self.plugins_dir is None:
+            return
+        from . import plugins as _plugins
+        loaded, failures = _plugins.load_plugins(self.plugins_dir)
+        self._plugin_failures = failures
+        self._plugin_tool_names = sorted(t.name for p in loaded for t in p.tools)
+
+    def active_plugin_tools(self) -> list[str]:
+        """Tool names of hash-reviewed plugins, cached from the last attach
+        (GET /harness/tools must not re-import anything)."""
+        return list(self._plugin_tool_names)
+
     def pending_child_asks(self, session_id: str) -> list[dict]:
         """Relayed asks (ADR-0008): pending approvals of live children, tagged
         with their session id — a reconnecting parent client redraws them."""
@@ -426,7 +484,10 @@ class HarnessManager:
         live.handle.flush()
         # the live session runs the mode as set; a yolo never survives a restart
         # because fold_policy (attach) maps a durable yolo back to ask (ADR-0010)
-        live.loop._broker.policy = ApprovalPolicy(mode, allowlist)   # type: ignore[attr-defined]
+        new_policy = ApprovalPolicy(mode, allowlist)
+        if self.plugins_dir is not None:            # ADR-0014: the write gate is not a session setting
+            new_policy.protected_dirs = [self.plugins_dir]
+        live.loop._broker.policy = new_policy       # type: ignore[attr-defined]
 
     def set_mode(self, session_id: str, *, plan: bool | None = None,
                  goal: dict | None = None) -> None:
@@ -475,6 +536,8 @@ class ApprovalChannel:
     _asks: dict[str, dict]
     _lock: threading.Lock
     relay: tuple[queue.Queue[dict], str] | None = None   # (parent notices, child session id)
+    plugin_tools: set[str] = set()                       # ADR-0014: ask cards get a `plugin` chip
+    protected_dirs: list = []                            # ADR-0014: a write here gets the `plugin write` chip
 
     def __init__(self, notices: queue.Queue[dict]) -> None:
         self.notices = notices
@@ -486,6 +549,10 @@ class ApprovalChannel:
         dq: queue.Queue = queue.Queue()
         ask = {"call_id": req.call_id, "tool": req.tool, "args": req.args,
                "preview": req.args_preview}          # full args: the card shows what runs (ADR-0010)
+        if req.tool in self.plugin_tools:            # a plugin's own tool: chip it (D4)
+            ask["plugin"] = True
+        if targets_protected(req.tool, req.args, self.protected_dirs):   # a write into the plugin dir: chip + copy (D4)
+            ask["plugin_write"] = True
         with self._lock:
             self._decisions[req.call_id] = dq
             self._asks[req.call_id] = ask

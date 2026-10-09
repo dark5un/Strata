@@ -177,6 +177,146 @@ function closePresetManage() {
 }
 $("h-preset-manage").onclick = presetManage;
 
+// ------------------------------------------------------------------ plugins panel (M8 / ADR-0014)
+// Server-scoped: the button shows only when the server started with plugins
+// on (GET harness/plugins answers; 404 = off). The panel reviews code — it
+// never authors it (the filesystem is the editor, presets precedent).
+let PLUGINS_ON = null;   // tri-state: unknown / off / on
+async function pluginsOn() {
+  if (PLUGINS_ON !== null) return PLUGINS_ON;
+  try { await hget("harness/plugins"); PLUGINS_ON = true; }
+  catch { PLUGINS_ON = false; }
+  return PLUGINS_ON;
+}
+async function pluginBadge() {
+  // warning dot when anything is quarantined/changed/failed (D1)
+  if (!(await pluginsOn())) return;
+  try {
+    const {plugins} = await hget("harness/plugins");
+    const need = plugins.filter((p) => p.state !== "active").length;
+    const dot = $("h-plugin-dot");
+    dot.hidden = need === 0;
+    $("h-plugin-manage").setAttribute("aria-label",
+      need ? `Manage plugins — ${need} plugin${need > 1 ? "s" : ""} need${need > 1 ? "" : "s"} review` : "Manage plugins");
+  } catch { /* panel state is best-effort */ }
+}
+function closePluginManage() {
+  const pop = document.getElementById("h-plugin-pop");
+  if (pop) pop.remove();
+}
+async function pluginManage() {
+  closePresetManage();
+  closePluginManage();
+  const pop = document.createElement("div");
+  pop.id = "h-plugin-pop";
+  pop.className = "st-card harness-popover harness-preset-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Manage plugins");
+  pop.innerHTML = `<div class="harness-popover__actions">` +
+    `<span class="card-title">Plugins</span>` +
+    `<button class="st-btn st-btn--icon" id="h-plugin-close" title="Close" aria-label="Close">✕</button></div>` +
+    `<div id="h-plugin-rows"><p class="muted small">loading…</p></div>` +
+    `<p class="muted small">Plugins are code. Review the source before approving — ` +
+    `a plugin loads only after you approve its exact bytes, and writes to the plugin ` +
+    `folder always ask, even in yolo.</p>`;
+  $("h-bar").appendChild(pop);
+  $("h-plugin-close").onclick = () => { closePluginManage(); $("h-plugin-manage").focus(); };
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePluginManage(); $("h-plugin-manage").focus(); } });
+  try {
+    const {dir, plugins} = await hget("harness/plugins");
+    const rows = $("h-plugin-rows");
+    rows.innerHTML = "";
+    if (!plugins.length) {
+      rows.innerHTML = `<p class="muted small">No plugins. Drop .py files into <code class="inline">${esc(dir)}</code> — they load only after you review them here.</p>`;
+      return;
+    }
+    for (const p of plugins) {
+      const row = document.createElement("div");
+      row.className = "harness-preset-row";
+      const badge = p.state === "active"
+        ? `<span class="st-badge st-badge--reading" title="reviewed and loaded in new sessions">active</span>`
+        : p.state === "failed"
+          ? `<span class="st-badge st-badge--error" title="${esc(p.error || "import failed")}">error</span>`
+          : `<span class="st-badge st-badge--queued" title="${p.state === "changed" ? "was approved, then edited — NOT loaded" : "never approved — NOT loaded"}">${p.state === "changed" ? "changed" : "needs review"}</span>`;
+      row.innerHTML = `<span class="harness-preset-row__name">${esc(p.name)}</span>${badge}`;
+      const acts = document.createElement("span");
+      acts.className = "harness-preset-row__actions";
+      const mk = (label, title, fn) => {
+        const b = document.createElement("button");
+        b.className = "st-btn st-btn--secondary";
+        b.textContent = label;
+        b.title = title;
+        b.onclick = fn;
+        acts.appendChild(b);
+        return b;
+      };
+      mk("Source", "read the full source (and the diff vs the reviewed version)", () => pluginSource(p.name));
+      if (p.state !== "active") {
+        mk("Approve", "imports this code into every NEW session on this server — read the source first", async (e) => {
+          if (e.target.dataset.confirm !== "1") {          // second click confirms
+            e.target.dataset.confirm = "1";
+            e.target.textContent = "Read source first?";
+            return;
+          }
+          try {
+            await hpost("harness/plugins/review", {name: p.name, sha256: p.sha256});
+            toast("ok", "Plugin approved", `${p.name} loads in new sessions`);
+            await pluginBadge(); presetManageRefresh(); pluginManage();
+          } catch (err) { toast("error", "Approve plugin", err.message); }
+        });
+      } else {
+        mk("Disable", "drop from the reviewed manifest — quarantines at the next session", async (e) => {
+          if (e.target.dataset.confirm !== "1") {
+            e.target.dataset.confirm = "1";
+            e.target.textContent = "Sure?";
+            return;
+          }
+          try { await hpost("harness/plugins/disable", {name: p.name}); await pluginBadge(); pluginManage(); }
+          catch (err) { toast("error", "Disable plugin", err.message); }
+        });
+      }
+      row.appendChild(acts);
+      rows.appendChild(row);
+      if (p.state === "failed" && p.error) {
+        const err = document.createElement("p");
+        err.className = "muted small harness-plugin-error";
+        err.textContent = p.error;
+        rows.appendChild(err);
+      }
+    }
+  } catch (e) { toast("error", "Plugins", e.message); }
+}
+$("h-plugin-manage").onclick = pluginManage;
+async function pluginSource(name) {
+  closePluginManage();
+  const pop = document.createElement("div");
+  pop.id = "h-plugin-pop";
+  pop.className = "st-card harness-popover harness-preset-pop harness-plugin-source";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", `Plugin source: ${name}`);
+  pop.innerHTML = `<div class="harness-popover__actions">` +
+    `<span class="card-title">Plugin <code class="inline">${esc(name)}</code></span>` +
+    `<button class="st-btn st-btn--icon" id="h-plugin-close" title="Close" aria-label="Close">✕</button></div>` +
+    `<div id="h-plugin-src"><p class="muted small">loading…</p></div>`;
+  $("h-bar").appendChild(pop);
+  $("h-plugin-close").onclick = () => { closePluginManage(); $("h-plugin-manage").focus(); };
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePluginManage(); $("h-plugin-manage").focus(); } });
+  try {
+    const v = await hget(`harness/plugins/source?name=${encodeURIComponent(name)}`);
+    const meta = `<p class="muted small">sha256 ${esc(v.sha256.slice(0, 16))}… · ${fmt(v.size)} bytes</p>`;
+    let diffHtml = "";
+    if (v.diff) {
+      diffHtml = `<div class="tool-call__label">diff vs the reviewed version</div>` +
+        `<pre class="st-code harness-plugin-diff">${v.diff.map((ln) =>
+          `<span class="${ln.startsWith("+") && !ln.startsWith("+++") ? "harness-diff-add" : ln.startsWith("-") && !ln.startsWith("---") ? "harness-diff-del" : ""}">${esc(ln)}</span>`).join("\n")}</pre>`;
+    }
+    $("h-plugin-src").innerHTML = meta + diffHtml +
+      `<div class="tool-call__label">full source</div>` +
+      `<pre class="st-code harness-approval__full">${esc(v.source)}</pre>`;
+  } catch (e) { $("h-plugin-src").innerHTML = `<p class="muted small">${esc(e.message)}</p>`; }
+}
+function presetManageRefresh() { /* the preset editor's tool list may gain plugin tools */ }
+
 // the editor form over the YAML schema: the file stays the source of truth
 function presetEditor(preset) {
   const editing = preset && !preset.dupOf;
@@ -686,14 +826,20 @@ function approvalHero(d) {
   }
   if (d.tool === "write_file") {
     const n = String(a.content || "").length;
+    const pw = d.plugin_write
+      ? ` <span class="st-badge st-badge--queued" title="writes into the plugin folder — this file becomes server code after review in the Plugins panel">plugin write</span>` : "";
     return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
-      `<span class="card-title">Write <code class="inline">${esc(a.path || "")}</code> — ${fmt(n)} chars${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+      `<span class="card-title">Write <code class="inline">${esc(a.path || "")}</code> — ${fmt(n)} chars${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}${pw}</span></div>` +
+      (d.plugin_write ? `<p class="muted small">This file becomes server code after you review it in the Plugins panel. It will NOT load automatically.</p>` : "") +
       `<details class="st-collapse"><summary>show content${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
       `<div class="st-collapse__body"><pre class="st-code harness-approval__full">${esc(a.content || "")}</pre></div></details>`;
   }
   if (d.tool === "edit_file") {
+    const pw = d.plugin_write
+      ? ` <span class="st-badge st-badge--queued" title="edits inside the plugin folder — this file becomes server code after review in the Plugins panel">plugin write</span>` : "";
     return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
-      `<span class="card-title">Edit <code class="inline">${esc(a.path || "")}</code>${a.replace_all ? " (all occurrences)" : ""}${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+      `<span class="card-title">Edit <code class="inline">${esc(a.path || "")}</code>${a.replace_all ? " (all occurrences)" : ""}${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}${pw}</span></div>` +
+      (d.plugin_write ? `<p class="muted small">This file becomes server code after you review it in the Plugins panel. It will NOT load automatically.</p>` : "") +
       `<details class="st-collapse" open><summary>find &rarr; replace${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
       `<div class="st-collapse__body"><div class="tool-call__label">find</div>` +
       `<pre class="st-code harness-approval__full">${esc(a.old_string || "")}</pre>` +
@@ -702,8 +848,10 @@ function approvalHero(d) {
   }
   const mcp = d.tool.includes("__")   // namespaced = an MCP hub tool (ADR-0012): out of process
     ? `<span class="st-badge st-badge--reading" title="MCP server &quot;${esc(d.tool.split("__")[0])}&quot; — runs out of process">mcp</span>` : "";
+  const pl = d.plugin   // a reviewed plugin's own tool (ADR-0014): in-process server code
+    ? ` <span class="st-badge st-badge--queued" title="provided by a self-authored plugin — runs in-process as server code">plugin</span>` : "";
   return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
-    `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>? ${mcp}${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+    `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>? ${mcp}${pl}${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
     `<pre class="st-code harness-approval__full">${esc(JSON.stringify(a, null, 1) || d.preview || "")}</pre>`;
 }
 function approvalCard(d) {
@@ -996,6 +1144,8 @@ async function savePolicy() {
 (async function harnessBoot() {
   $("h-allowlist").value = store.get("harness.allowlist", []).join(", ");
   await loadPresets();
+  if (await pluginsOn()) $("h-plugin-manage").hidden = false;   // ADR-0014: off -> no affordance
+  pluginBadge();
   await loadSessions();
   const saved = store.get("harness.session", null);
   if (saved && H.sessions.some((s) => s.id === saved)) openSession(saved);

@@ -24,11 +24,22 @@ def attach(svc, a, cfg: dict, hub=None) -> None:
     from .manager import HarnessManager
     sessions_dir = Path(os.environ.get("STRATA_HARNESS_DIR",
                                        Path.home() / ".local/share/strata/harness")) / "sessions"
+    # ADR-0014: self-authored plugins are OFF by default. Opt-in is a
+    # server-start decision (env or run-config) — the browser can never turn
+    # it on. When off, plugins_dir stays None: no scan, no import, no UI.
+    plugins_on = (os.environ.get("STRATA_HARNESS_PLUGINS") == "1"
+                  or cfg.get("harness_plugins") is True)
+    plugins_dir = None
+    if plugins_on:
+        from .plugins import plugin_dir_default
+        plugins_dir = Path(os.environ.get("STRATA_HARNESS_PLUGIN_DIR", plugin_dir_default()))
     svc.harness = HarnessManager(sessions_dir,
                                  lambda: make_service_engine(svc, sampling=dict(svc.sampling_defaults)),
                                  workspace_root=Path(os.environ.get("STRATA_HARNESS_WORKSPACE", os.getcwd())),
                                  metrics_fn=lambda: svc.metrics(),
-                                 mcp_hub=hub)
+                                 mcp_hub=hub,
+                                 plugins_dir=plugins_dir)
     print(f"[strata] harness on (/harness): agent sessions in {sessions_dir}; tools run on this PC behind "
-          "approvals" + ("" if svc.api_key else "; no API key — anyone who can reach this page drives the agent"),
+          "approvals" + ("" if svc.api_key else "; no API key — anyone who can reach this page drives the agent")
+          + (f"; plugins on ({plugins_dir}, hash-reviewed load only)" if plugins_dir else ""),
           flush=True)

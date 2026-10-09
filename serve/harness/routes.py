@@ -71,7 +71,38 @@ def handle_get(handler, svc, path: str) -> None:
         names = {t.name for t in default_registry(root=mgr.workspace_root)}
         if mgr.mcp_hub is not None:
             names |= {t["name"] for t in mgr.mcp_hub.template_tools()}  # ADR-0012
+        if mgr.plugins_dir is not None:
+            # reviewed plugin tools (ADR-0014): active only — a quarantined
+            # plugin has no tools, and the editor must not offer what cannot run
+            for p in mgr.active_plugin_tools():
+                names.add(p)
         handler._json(200, {"tools": sorted(names)})
+        return
+    if rest == "plugins":
+        # ADR-0014: server-scoped state for the Plugins panel. Off -> 404.
+        if mgr.plugins_dir is None:
+            _bad(handler, 404, "plugins are off (set STRATA_HARNESS_PLUGINS=1 at server start)")
+            return
+        from . import plugins as _plugins
+        entries = _plugins.scan(mgr.plugins_dir)
+        by_name = {e["name"]: e for e in entries}
+        for f in mgr.plugin_failures():           # last attach's import/contract errors
+            e = by_name.get(f["name"])
+            if e is not None:
+                e["state"] = "failed"
+                e["error"] = f["error"]
+        handler._json(200, {"dir": str(mgr.plugins_dir), "plugins": entries})
+        return
+    if rest == "plugins/source":
+        if mgr.plugins_dir is None:
+            _bad(handler, 404, "plugins are off (set STRATA_HARNESS_PLUGINS=1 at server start)")
+            return
+        from . import plugins as _plugins
+        view = _plugins.source_view(mgr.plugins_dir, (query.get("name") or [""])[0])
+        if view is None:
+            _bad(handler, 404, "no such plugin (or a bad name)")
+            return
+        handler._json(200, view)
         return
     if rest == "export":
         sid = (query.get("session") or [""])[0]
@@ -247,6 +278,32 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
             if not isinstance(name, str):
                 raise ValueError("presets/delete: {\"name\": ...}")
             handler._json(200, {"deleted": delete_preset(mgr.presets_dir, name.strip())})
+            return
+        if rest in ("plugins/review", "plugins/disable"):
+            # ADR-0014: the load gate. review approves the EXACT bytes shown
+            # (sha256 must match the current file — TOCTOU guard); disable
+            # drops it from the manifest (quarantine at the next attach).
+            if mgr.plugins_dir is None:
+                _bad(handler, 404, "plugins are off (set STRATA_HARNESS_PLUGINS=1 at server start)")
+                return
+            from . import plugins as _plugins
+            name = req.get("name")
+            if not isinstance(name, str):
+                raise ValueError(f"{rest}: {{\"name\": ...}}")
+            if rest == "plugins/review":
+                sha = req.get("sha256")
+                if not isinstance(sha, str):
+                    raise ValueError("plugins/review: {\"name\": ..., \"sha256\": ...} from the panel")
+                result = _plugins.review(mgr.plugins_dir, name.strip(), sha)
+                if not result.get("ok"):
+                    _bad(handler, 409, result.get("why", "review refused"))
+                    return
+                mgr.refresh_plugins()   # the tools route reflects the approval now
+                handler._json(200, {"ok": True, "note": "approved — loads in NEW sessions (fork to apply to this one)"})
+            else:
+                ok = _plugins.disable(mgr.plugins_dir, name.strip())
+                mgr.refresh_plugins()
+                handler._json(200, {"disabled": ok})
             return
         if len(parts) == 3 and parts[0] == "session":
             sid, action = parts[1], parts[2]

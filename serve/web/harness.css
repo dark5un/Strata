@@ -99,6 +99,19 @@
 .harness-preset-row__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .harness-preset-row__actions { display: inline-flex; gap: var(--st-s-1); }
 .harness-preset-row__actions .st-btn { padding: 2px 8px; }
+
+/* plugins panel (M8 / ADR-0014): reuses the preset popover family; the
+   source view is wider because reviewing code needs the full lines */
+.harness-plugin-source { min-width: 420px; max-width: 640px; }
+.harness-plugin-source #h-plugin-src { max-height: 60vh; overflow-y: auto; }
+.harness-plugin-error { margin: 0 0 var(--st-s-2); color: var(--st-danger-text); word-break: break-word; }
+.harness-plugin-dot {
+  position: absolute; top: 2px; right: 2px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--st-warn);
+}
+#h-plugin-manage { position: relative; }
+.harness-diff-add { display: block; color: var(--st-accent-text); background: var(--st-accent-tint); }
+.harness-diff-del { display: block; color: var(--st-danger-text); background: var(--st-danger-tint); }
 .harness-preset-tools { display: flex; flex-direction: column; gap: var(--st-s-1); max-height: 220px; overflow-y: auto; }
 .harness-preset-tool { display: flex; align-items: center; gap: var(--st-s-2); font-size: 0.9em; }
 .harness-preset-tool > span { flex: 1; }

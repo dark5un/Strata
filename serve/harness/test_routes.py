@@ -247,6 +247,7 @@ class SessionCommandTests(RoutesBase):
         self.assertEqual(row["preset"], "researcher")
         self.assertEqual(row["origin"], "user")
 
+
     def test_export_routes(self):
         _, created = self.post("/harness/session", {})
         sid = created["id"]
@@ -284,6 +285,69 @@ class SessionCommandTests(RoutesBase):
         self.assertEqual(ev["pending"][0]["data"]["call_id"], "c1")
         self.mgr.decide(sid, "c1", "deny")            # settle the worker for teardown
 
+
+
+class PluginRouteTests(RoutesBase):
+    """ADR-0014 over HTTP: off -> 404; on -> scan/review/source/disable."""
+
+    def setUp(self):
+        super().setUp()
+        from . import test_plugins as tp
+        self.plugins_dir = self.root / "plugins"
+        self.plugins_dir.mkdir()
+        self.mgr.plugins_dir = self.plugins_dir
+        self.GOOD = tp.GOOD
+
+    def test_404_when_plugins_off(self):
+        self.mgr.plugins_dir = None
+        code, body = self.get("/harness/plugins")
+        self.assertEqual(code, 404)
+        self.assertIn("plugins are off", body["error"]["message"])
+        code, _ = self.post("/harness/plugins/review", {"name": "p1", "sha256": "x"})
+        self.assertEqual(code, 404)
+
+    def test_scan_review_source_disable_flow(self):
+        path = self.plugins_dir / "p1.py"
+        path.write_text(self.GOOD, encoding="utf-8")
+        code, body = self.get("/harness/plugins")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["dir"], str(self.plugins_dir))
+        entry = next(p for p in body["plugins"] if p["name"] == "p1")
+        self.assertEqual(entry["state"], "quarantined")
+        # source view before any review: full text, no diff
+        code, v = self.get("/harness/plugins/source?name=p1")
+        self.assertEqual(code, 200)
+        self.assertIn("plugin_echo", v["source"])
+        self.assertIsNone(v["diff"])
+        # review with the wrong hash -> 409 (TOCTOU guard)
+        code, _ = self.post("/harness/plugins/review", {"name": "p1", "sha256": "deadbeef"})
+        self.assertEqual(code, 409)
+        code, body = self.post("/harness/plugins/review", {"name": "p1", "sha256": entry["sha256"]})
+        self.assertEqual(code, 200)
+        _, body = self.get("/harness/plugins")
+        self.assertEqual(next(p for p in body["plugins"] if p["name"] == "p1")["state"], "active")
+        # the tools route gains the plugin's tool (preset editor)
+        _, tools = self.get("/harness/tools")
+        self.assertIn("plugin_echo", tools["tools"])
+        # edit -> changed + diff vs the reviewed snapshot
+        path.write_text(self.GOOD + "\n# edited\n", encoding="utf-8")
+        _, body = self.get("/harness/plugins")
+        self.assertEqual(next(p for p in body["plugins"] if p["name"] == "p1")["state"], "changed")
+        code, v = self.get("/harness/plugins/source?name=p1")
+        self.assertEqual(code, 200)
+        self.assertTrue(v["diff"] and any(ln.startswith("+") for ln in v["diff"]))
+        # disable -> quarantined again
+        code, body = self.post("/harness/plugins/disable", {"name": "p1"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["disabled"])
+        _, body = self.get("/harness/plugins")
+        self.assertEqual(next(p for p in body["plugins"] if p["name"] == "p1")["state"], "quarantined")
+
+    def test_plugin_route_validation(self):
+        code, _ = self.post("/harness/plugins/review", {"name": "nope"})
+        self.assertEqual(code, 400)          # sha256 required
+        code, _ = self.get("/harness/plugins/source?name=../etc/passwd")
+        self.assertEqual(code, 404)          # bad name never resolves
 
 class StreamTests(RoutesBase):
     def read_sse(self, f, want: int, timeout: float = 10.0):
