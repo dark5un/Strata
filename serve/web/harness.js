@@ -103,6 +103,135 @@ async function loadPresets() {
 }
 $("h-preset").onchange = () => store.set("harness.preset", $("h-preset").value);
 
+// ------------------------------------------------------------------ preset manage panel (M7 D9 / ADR-0011)
+let PRESET_TOOLS = [];
+async function presetManage() {
+  closePresetManage();
+  const pop = document.createElement("div");
+  pop.id = "h-preset-pop";
+  pop.className = "st-card harness-popover harness-preset-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Manage presets");
+  pop.innerHTML = `<div class="harness-popover__actions">` +
+    `<span class="card-title">Presets</span>` +
+    `<button class="st-btn st-btn--primary" id="h-preset-new">New</button>` +
+    `<button class="st-btn st-btn--icon" id="h-preset-close" title="Close" aria-label="Close">✕</button></div>` +
+    `<div id="h-preset-rows"><p class="muted small">loading…</p></div>` +
+    `<p class="muted small">Presets apply to new sessions; fork to change a running one. ` +
+    `Bundled presets stay read-only — editing copies them to your presets.</p>`;
+  $("h-bar").appendChild(pop);
+  $("h-preset-close").onclick = () => { closePresetManage(); $("h-preset-manage").focus(); };
+  $("h-preset-new").onclick = () => presetEditor(null);
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePresetManage(); $("h-preset-manage").focus(); } });
+  try {
+    const [{presets}, {tools}] = await Promise.all([hget("harness/presets"), hget("harness/tools")]);
+    PRESET_TOOLS = tools;
+    const rows = $("h-preset-rows");
+    rows.innerHTML = "";
+    for (const p of presets) {
+      if (p.name === "default") continue;
+      const row = document.createElement("div");
+      row.className = "harness-preset-row";
+      row.innerHTML = `<span class="harness-preset-row__name">${esc(p.name)}</span>` +
+        `<span class="st-badge ${p.source === "user" ? "st-badge--reading" : ""}" title="${esc(p.source)} preset">${esc(p.source)}</span>`;
+      const acts = document.createElement("span");
+      acts.className = "harness-preset-row__actions";
+      const mk = (label, title, fn) => {
+        const b = document.createElement("button");
+        b.className = "st-btn st-btn--secondary";
+        b.textContent = label;
+        b.title = title;
+        b.onclick = fn;
+        acts.appendChild(b);
+        return b;
+      };
+      if (p.source === "user") {
+        mk("Edit", "edit this preset", async () => {
+          const one = await hget(`harness/preset?name=${encodeURIComponent(p.name)}`);
+          presetEditor(one);
+        });
+        mk("Delete", "delete this preset", async (e) => {
+          if (e.target.dataset.confirm !== "1") {           // second click confirms
+            e.target.dataset.confirm = "1";
+            e.target.textContent = "Sure?";
+            return;
+          }
+          try { await hpost("harness/presets/delete", {name: p.name}); await loadPresets(); presetManage(); }
+          catch (err) { toast("error", "Delete preset", err.message); }
+        });
+      } else {
+        mk("Duplicate", "copy to your presets and edit", async () => {
+          const one = await hget(`harness/preset?name=${encodeURIComponent(p.name)}`);
+          presetEditor({...one, name: `${one.name}-copy`, dupOf: one.name});
+        });
+      }
+      row.appendChild(acts);
+      rows.appendChild(row);
+    }
+    if (!rows.children.length) rows.innerHTML = `<p class="muted small">No presets yet.</p>`;
+  } catch (e) { toast("error", "Presets", e.message); }
+}
+function closePresetManage() {
+  const pop = document.getElementById("h-preset-pop");
+  if (pop) pop.remove();
+}
+$("h-preset-manage").onclick = presetManage;
+
+// the editor form over the YAML schema: the file stays the source of truth
+function presetEditor(preset) {
+  const editing = preset && !preset.dupOf;
+  const pop = document.createElement("div");
+  pop.className = "st-card harness-popover harness-preset-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", editing ? "Edit preset" : "New preset");
+  const allow = new Set((preset && preset.tools && preset.tools.allow) || []);
+  const deny = new Set((preset && preset.tools && preset.tools.deny) || []);
+  pop.innerHTML = `<span class="card-title">${editing ? `Edit ${esc(preset.name)}` : (preset ? "Duplicate preset" : "New preset")}</span>` +
+    `<label class="muted small" for="h-pe-name">name</label>` +
+    `<input class="st-input" id="h-pe-name" value="${esc((preset && preset.name) || "")}" ${editing ? "disabled" : ""}>` +
+    `<label class="muted small" for="h-pe-desc">description</label>` +
+    `<input class="st-input" id="h-pe-desc" value="${esc((preset && preset.description) || "")}">` +
+    `<label class="muted small" for="h-pe-persona">persona (system prompt)</label>` +
+    `<textarea class="st-input" id="h-pe-persona" rows="4">${esc((preset && preset.persona) || "")}</textarea>` +
+    `<span class="muted small">tools: allow = only these run; deny = these never run</span>` +
+    `<div class="harness-preset-tools" id="h-pe-tools"></div>` +
+    `<div class="harness-popover__actions">` +
+    `<button class="st-btn st-btn--primary" id="h-pe-save">Save</button>` +
+    `<button class="st-btn st-btn--secondary" id="h-pe-cancel">Cancel</button></div>`;
+  $("h-bar").appendChild(pop);
+  const box = $("h-pe-tools");
+  for (const t of PRESET_TOOLS) {
+    const lab = document.createElement("label");
+    lab.className = "harness-preset-tool";
+    lab.innerHTML = `<span>${esc(t)}</span>` +
+      `<label><input type="checkbox" data-t="${esc(t)}" data-k="allow" ${allow.has(t) ? "checked" : ""}>allow</label>` +
+      `<label><input type="checkbox" data-t="${esc(t)}" data-k="deny" ${deny.has(t) ? "checked" : ""}>deny</label>`;
+    box.appendChild(lab);
+  }
+  // allow and deny are mutually exclusive per tool
+  box.addEventListener("change", (e) => {
+    const cb = e.target;
+    const other = box.querySelector(`input[data-t="${cb.dataset.t}"][data-k="${cb.dataset.k === "allow" ? "deny" : "allow"}"]`);
+    if (cb.checked && other) other.checked = false;
+  });
+  $("h-pe-cancel").onclick = () => { pop.remove(); presetManage(); };
+  $("h-pe-save").onclick = async () => {
+    const name = $("h-pe-name").value.trim();
+    const a = new Set(), dn = new Set();
+    for (const cb of box.querySelectorAll("input:checked")) (cb.dataset.k === "allow" ? a : dn).add(cb.dataset.t);
+    try {
+      await hpost("harness/presets", {name, description: $("h-pe-desc").value.trim() || null,
+                                      persona: $("h-pe-persona").value.trim() || null,
+                                      tools: {allow: [...a], deny: [...dn]}});
+      pop.remove();
+      await loadPresets();
+      presetManage();
+      toast("success", "Preset saved", name);
+    } catch (e) { toast("error", "Save preset", e.message); }
+  };
+  $("h-pe-name").focus();
+}
+
 function exportPopover() {
   closeExportPopover();
   const pop = document.createElement("div");
@@ -157,6 +286,7 @@ function openSession(sid) {
   H.plan = false; H.goal = null;
   setPlanChip(false); setGoalChip(null, "");   // no stale chips between sessions
   setBusy(false);
+  $("h-policy").value = "ask"; $("h-allowlist").hidden = true; setYoloBanner(false);
   $("h-transcript").innerHTML = `<p class="muted">Loading session ${esc(sid)}&hellip;</p>`;
   loadSessions();
   startStream();
@@ -174,6 +304,7 @@ function startStream() {
       let buf = "";
       // the stream replays the whole log from seq 0: reset the dedup state to match
       $("h-transcript").innerHTML = "";
+      provClear();
       H.lastSeq = -1;
       H.seenAsks = new Set();
       H.plan = false; H.goal = null;
@@ -218,15 +349,22 @@ async function reconcile() {
   if (H.reconciling || !H.sid) return;
   H.reconciling = true;
   try {
-    const {events, pending, busy} = await hget(`harness/events?session=${encodeURIComponent(H.sid)}`);
+    const {events, pending, busy, policy} = await hget(`harness/events?session=${encodeURIComponent(H.sid)}`);
     const buffered = H.buffer; H.buffer = [];
     $("h-transcript").innerHTML = "";
+    provClear();
     H.lastSeq = -1;
     H.seenAsks = new Set();
     for (const row of events) paint(row);
     for (const row of pending) paint(row);            // unanswered asks: redraw their cards
     for (const row of buffered) paint(row);
     H.busy = busy; setBusy(busy);
+    if (policy) {                                      // the server's live policy wins (ADR-0010)
+      $("h-policy").value = policy.mode;
+      $("h-allowlist").hidden = policy.mode !== "allowlist";
+      $("h-allowlist").value = (policy.allowlist || []).join(", ");
+      setYoloBanner(policy.mode === "yolo");
+    }
     H.retryDelay = 1000;
   } catch (e) { toast("warn", "Harness", `reconnect failed: ${e.message}`); /* the next frame or a reload retries */ }
   H.reconciling = false;
@@ -240,6 +378,51 @@ function nearBottom() {
 function scrollDown(stick) {
   const s = $("h-transcript");
   if (stick) s.scrollTop = s.scrollHeight;
+}
+
+// provisional streaming nodes (M7a-3): process-local, replaced by the durable row
+const PROV = { think: null, thinkBody: null, bubble: null };
+function provThink() {
+  if (!PROV.think) {
+    PROV.think = el("st-msg st-msg--assistant harness-prov");
+    const det = document.createElement("details");
+    det.className = "st-collapse think";
+    det.open = true;
+    det.innerHTML = `<summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title">Thinking…</span>` +
+      `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+      `<div class="st-collapse__body thinking"></div>`;
+    PROV.think.appendChild(det);
+    PROV.thinkBody = det.querySelector(".thinking");
+  }
+  return PROV.thinkBody;
+}
+function provBubble() {
+  if (!PROV.bubble) {
+    PROV.bubble = el("st-msg st-msg--assistant harness-prov");
+    PROV.bubble.setAttribute("aria-hidden", "true");   // the durable row announces it (a11y)
+    const b = document.createElement("div");
+    b.className = "st-bubble";
+    b.style.whiteSpace = "pre-wrap";
+    PROV.bubble.appendChild(b);
+  }
+  return PROV.bubble.querySelector(".st-bubble");
+}
+function provClear() {
+  for (const k of ["think", "bubble"]) if (PROV[k]) { PROV[k].remove(); PROV[k] = null; }
+  PROV.thinkBody = null;
+}
+
+// the durable thinking block (M7a-1): collapsed once settled — the "why" is
+// available, not mandatory reading (same shape as the Chat tab's .think)
+function thinkBlock(reasoning) {
+  const wrap = el("st-msg st-msg--assistant");
+  const det = document.createElement("details");
+  det.className = "st-collapse think";
+  det.innerHTML = `<summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title">Thinking</span>` +
+    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+    `<div class="st-collapse__body thinking"></div>`;
+  det.querySelector(".thinking").textContent = reasoning;
+  wrap.appendChild(det);
 }
 
 function el(cls, html) {
@@ -260,7 +443,19 @@ function paint(row) {
     if (row.seq <= H.lastSeq) return;                 // duplicate (reconcile overlap)
     H.lastSeq = row.seq;
   }
+  if (t === "stream/delta") {
+    // provisional (M7a-3): the durable assistant/message finalizes it
+    if (d.kind === "reasoning") provThink().textContent += d.text || "";
+    else if (d.kind === "content") {
+      if (PROV.think) { const det = PROV.think.querySelector("details"); if (det) det.open = false; }
+      provBubble().textContent += d.text || "";
+    }
+    const stick = nearBottom();
+    if (stick) scrollDown(true);
+    return;
+  }
   if (t === "user/message") {
+    provClear();
     if (d.source === "subagent") {
       subagentCard(d);
     } else {
@@ -268,8 +463,12 @@ function paint(row) {
     }
     H.busy = true; setBusy(true);
   } else if (t === "assistant/message") {
+    provClear();
+    if (d.reasoning) thinkBlock(d.reasoning);
     if (d.content) el("st-msg st-msg--assistant", `<div class="st-bubble">${markdown(d.content)}</div>`);
     if (d.usage) showUsage(d.usage);
+  } else if (t === "session/title") {
+    loadSessions();
   } else if (t === "tool/call") {
     toolCard(d);
   } else if (t === "tool/result") {
@@ -288,6 +487,7 @@ function paint(row) {
     H.seenAsks.add(d.qid);
     questionCard(d);
   } else if (t === "turn/end") {
+    provClear();                                       // a cancelled/errored turn clears provisional nodes
     H.busy = false; setBusy(false);
     if (d.reason !== "completed")
       el("harness-note", `<span class="muted small">turn ${esc(d.reason)}${d.message ? `: ${esc(String(d.message)).slice(0, 200)}` : ""}</span>`);
@@ -461,11 +661,39 @@ function showUsage(u) {
 }
 
 // ------------------------------------------------------------------ approvals + questions
+// the ask card shows the FULL payload (M7a-2 / ADR-0010): never approve what
+// you cannot read. shell: the whole command, scrollable. write/edit: the path
+// is the hero line, the content sits behind an expand.
+function approvalHero(d) {
+  const a = d.args || {};
+  if (d.tool === "shell") {
+    return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
+      `<span class="card-title">Run a shell command?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+      `<pre class="st-code harness-approval__full">${esc(a.command || d.preview || "")}</pre>`;
+  }
+  if (d.tool === "write_file") {
+    const n = String(a.content || "").length;
+    return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
+      `<span class="card-title">Write <code class="inline">${esc(a.path || "")}</code> — ${fmt(n)} chars${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+      `<details class="st-collapse"><summary>show content${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+      `<div class="st-collapse__body"><pre class="st-code harness-approval__full">${esc(a.content || "")}</pre></div></details>`;
+  }
+  if (d.tool === "edit_file") {
+    return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
+      `<span class="card-title">Edit <code class="inline">${esc(a.path || "")}</code>${a.replace_all ? " (all occurrences)" : ""}${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+      `<details class="st-collapse" open><summary>find &rarr; replace${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+      `<div class="st-collapse__body"><div class="tool-call__label">find</div>` +
+      `<pre class="st-code harness-approval__full">${esc(a.old_string || "")}</pre>` +
+      `<div class="tool-call__label">replace</div>` +
+      `<pre class="st-code harness-approval__full">${esc(a.new_string || "")}</pre></div></details>`;
+  }
+  return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
+    `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+    `<pre class="st-code harness-approval__full">${esc(JSON.stringify(a, null, 1) || d.preview || "")}</pre>`;
+}
 function approvalCard(d) {
   const card = el("harness-approval",
-    `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
-    `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
-    `<pre class="st-code">${esc(d.preview || "")}</pre>` +
+    approvalHero(d) +
     `<div class="harness-approval__actions">` +
     `<button class="st-btn st-btn--primary" data-a="allow-once">Allow once</button>` +
     `<button class="st-btn st-btn--danger" data-a="deny">Deny</button></div>`);
@@ -484,8 +712,8 @@ function markDecided(callId, outcome) {
   const card = [...document.querySelectorAll(".harness-approval")].find((c) => c.dataset.callId === callId);
   if (!card) return;
   // the decision is made: fold the card to one quiet line (M6 UX: a decided
-  // approval must not compete with the live step; the preview stays available)
-  const preview = card.querySelector("pre")?.textContent || "";
+  // approval must not compete with the live step; the FULL payload stays available)
+  const full = [...card.querySelectorAll("pre")].map((p) => p.textContent).join("\n");
   const head = card.querySelector(".harness-approval__head");
   const title = head.querySelector(".card-title")?.textContent || "";
   card.dataset.decided = outcome;
@@ -493,10 +721,9 @@ function markDecided(callId, outcome) {
     `<details class="harness-approval__fold">` +
     `<summary>${icon(outcome === "deny" ? "error" : "check", "st-icon st-icon--sm")}` +
     `<span class="tool-call__name">${esc(title.trim())}</span>` +
-    `<span class="tool-call__preview muted">${esc(preview.split("\n")[0].slice(0, 90))}</span>` +
     `<span class="st-badge ${outcome === "deny" ? "st-badge--error" : "st-badge--reading"}">${esc(outcome)}</span>` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
-    `<div class="st-collapse__body"><pre class="tool-call__pre">${esc(preview)}</pre></div></details>`;
+    `<div class="st-collapse__body"><pre class="tool-call__pre">${esc(full)}</pre></div></details>`;
 }
 
 function questionCard(d) {
@@ -555,7 +782,7 @@ function composerEnabled(on) {
   // pill already shows the server state, don't duplicate it in the empty tab
   $("h-state").hidden = !on && !H.busy;
   // the whole session-scoped bar is honest about the empty state (UX review)
-  for (const id of ["h-plan", "h-goal", "h-fork", "h-policy", "h-allowlist", "h-export"]) $(id).disabled = !on;
+  for (const id of ["h-plan", "h-goal", "h-fork", "h-policy", "h-allowlist", "h-export", "h-preset-manage"]) $(id).disabled = !on;
 }
 
 // plan / goal mode chips + buttons (ADR-0007). State is tracked in H (not read
@@ -681,12 +908,20 @@ $("h-fork").onclick = async () => {
   } catch (e) { toast("error", "Fork", e.message); }
 };
 
-// approval policy: ask | never | allowlist (patterns ride the store)
+// approval policy: ask | never | allowlist | yolo (patterns ride the store;
+// the MODE never does — yolo is per-session and never restored, ADR-0010)
 $("h-policy").onchange = () => {
   $("h-allowlist").hidden = $("h-policy").value !== "allowlist";
+  setYoloBanner($("h-policy").value === "yolo");
   savePolicy();
 };
 $("h-allowlist").onchange = savePolicy;
+function setYoloBanner(on) {
+  $("h-yolo").hidden = !on;
+  const pill = $("h-state");
+  if (on && H.busy) pill.dataset.state = "yolo";
+  else if (pill.dataset.state === "yolo") pill.dataset.state = H.busy ? "generating" : "idle";
+}
 async function savePolicy() {
   if (!H.sid) return;
   const pats = $("h-allowlist").value.split(",").map((p) => p.trim()).filter(Boolean);
@@ -696,6 +931,38 @@ async function savePolicy() {
     toast("success", "Approval policy", $("h-policy").value);
   } catch (e) { toast("error", "Policy", e.message); }
 }
+
+// ------------------------------------------------------------------ resizable sidebar (M7 D9)
+(function resizer() {
+  const sep = $("h-resizer");
+  const layout = document.querySelector(".harness-layout");
+  const clamp = (w) => Math.max(160, Math.min(480, w));
+  const saved = store.get("harness.side", 240);
+  layout.style.setProperty("--h-side", `${clamp(saved)}px`);
+  let drag = null;
+  sep.addEventListener("pointerdown", (e) => {
+    drag = {x: e.clientX, w0: clamp(saved)};
+    sep.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  sep.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    layout.style.setProperty("--h-side", `${clamp(drag.w0 + e.clientX - drag.x)}px`);
+  });
+  sep.addEventListener("pointerup", (e) => {
+    if (!drag) return;
+    store.set("harness.side", clamp(drag.w0 + e.clientX - drag.x));
+    drag = null;
+  });
+  sep.addEventListener("keydown", (e) => {
+    const cur = parseInt(getComputedStyle(layout).getPropertyValue("--h-side"), 10) || 240;
+    if (e.key === "ArrowLeft") layout.style.setProperty("--h-side", `${clamp(cur - 16)}px`);
+    else if (e.key === "ArrowRight") layout.style.setProperty("--h-side", `${clamp(cur + 16)}px`);
+    else return;
+    e.preventDefault();
+    store.set("harness.side", parseInt(getComputedStyle(layout).getPropertyValue("--h-side"), 10));
+  });
+})();
 
 // ------------------------------------------------------------------ start
 (async function harnessBoot() {

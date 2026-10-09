@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import unittest
@@ -226,6 +227,112 @@ class LoopTests(unittest.TestCase):
         types = [r["type"] for r in h.events]
         self.assertLess(types.index(ev.STEP_START), types.index(ev.REQUEST_HEADER))
         self.assertLess(types.index(ev.REQUEST_HEADER), types.index(ev.ASSISTANT_MESSAGE))
+
+    # ------------------------------------------------------------------ M7
+
+    def test_reasoning_is_durable_but_not_replayed(self):
+        # M7a-1: reasoning lands in the log for the human/export, and is NOT
+        # fed back into the derived history (token cost; the Chat tab's server
+        # strips reasoning-only turns the same way).
+        lp, h = self._loop([{"content": "answer", "reasoning": "I checked twice", "tool_calls": [], "usage": {}}])
+        lp.send("go")
+        rows = [r for r in h.events if r["type"] == ev.ASSISTANT_MESSAGE]
+        self.assertEqual(rows[0]["data"]["reasoning"], "I checked twice")
+        msgs = derive_messages(h)
+        self.assertNotIn("I checked twice", json.dumps(msgs))
+
+    def test_stream_deltas_reach_the_sink(self):
+        # M7a-3: the loop forwards engine deltas to on_stream (process-local, never logged)
+        seen = []
+
+        def engine(messages, tools, on_event=None):
+            assert on_event is not None
+            on_event({"kind": "reasoning", "text": "thin"})
+            on_event({"kind": "content", "text": "hello"})
+            return {"content": "hello", "tool_calls": [], "usage": {}}
+        h = create(self.dir)
+        lp = Loop(engine=engine, tools={}, session=h, on_stream=seen.append)
+        lp.send("go")
+        self.assertEqual([d["kind"] for d in seen], ["reasoning", "content"])
+        self.assertNotIn("stream/delta", [r["type"] for r in h.events])   # never durable
+
+    def test_request_header_carries_the_full_envelope(self):
+        # M7b-1: every model request is reconstructable from log+code
+        lp, h = self._loop([{"content": "x", "tool_calls": [], "usage": {}}])
+        lp.sampling = {"temperature": 0.6}
+        lp.send("go")
+        hdr = [r for r in h.events if r["type"] == ev.REQUEST_HEADER][0]["data"]
+        self.assertEqual(hdr["sampling"], {"temperature": 0.6})
+        self.assertEqual([m["role"] for m in hdr["messages"]], ["user"])
+        self.assertEqual(hdr["messages"][0]["content"], "go")
+        self.assertEqual(len(hdr["tool_schemas_sha256"]), 64)
+
+    def test_failed_model_call_appends_an_attempt(self):
+        # M7b-2: a retried turn must not look identical to a clean one
+        lp, h = self._loop([RuntimeError("engine exploded")])
+        lp.send("go")
+        attempts = [r for r in h.events if r["type"] == ev.ASSISTANT_ATTEMPT]
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["data"]["status"], "failed")
+        self.assertIn("engine exploded", attempts[0]["data"]["error"])
+        self.assertIsInstance(attempts[0]["data"]["ms"], int)
+
+    def test_step_end_carries_wall_time(self):
+        # M7b-3: per-step timing makes wandering turns diagnosable
+        lp, h = self._loop([{"content": "x", "tool_calls": [], "usage": {}}])
+        lp.send("go")
+        step_end = [r for r in h.events if r["type"] == ev.STEP_END][0]["data"]
+        self.assertIsInstance(step_end["ms"], int)
+
+    def test_engine_timings_fold_into_step_end(self):
+        lp, h = self._loop([{"content": "x", "tool_calls": [], "usage": {
+            "prompt_tokens": 10, "completion_tokens": 2,
+            "timings": {"prompt_ms": 40.0, "predicted_ms": 20.0}}}])
+        lp.send("go")
+        step_end = [r for r in h.events if r["type"] == ev.STEP_END][0]["data"]
+        self.assertEqual(step_end["prompt_ms"], 40.0)
+        self.assertEqual(step_end["decode_ms"], 20.0)
+
+    def test_yolo_runs_the_tool_and_logs_it_unasked(self):
+        # ADR-0010: yolo auto-allows gated tools, still audited as decided {yolo, asked: false}
+        ran = {"v": False}
+
+        def spy(args, ctx):
+            ran["v"] = True
+            return {"text": "ran"}
+        tool = ToolDefinition(name="shell", description="s", parameters={"type": "object"}, execute=spy)
+        tool.needs_approval = True
+        from .approval import ApprovalBroker, ApprovalPolicy
+        broker = ApprovalBroker(ApprovalPolicy("yolo"))
+        lp, h = self._loop([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "shell", "arguments": {"command": "ls"}}], "usage": {}},
+            {"content": "ok", "tool_calls": [], "usage": {}},
+        ], tools=[tool], approval=broker.request)
+        lp.send("go")
+        self.assertTrue(ran["v"])
+        self.assertEqual([r for r in h.events if r["type"] == ev.APPROVAL_ASKED], [])
+        decided = [r for r in h.events if r["type"] == ev.APPROVAL_DECIDED]
+        self.assertEqual(decided[0]["data"]["outcome"], "yolo")
+        self.assertFalse(decided[0]["data"]["asked"])
+
+    def test_approval_request_carries_full_args(self):
+        # ADR-0010: the card and the matcher read the whole arguments, not a preview
+        seen = {}
+
+        def answerer(req):
+            seen["args"] = req.args
+            return "deny"
+        tool = ToolDefinition(name="shell", description="s", parameters={"type": "object"},
+                              execute=lambda a, c: {"text": "x"})
+        tool.needs_approval = True
+        long_cmd = "echo one && echo two && echo " + "z" * 400
+        lp, h = self._loop([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "shell",
+                                              "arguments": {"command": long_cmd}}], "usage": {}},
+            {"content": "ok", "tool_calls": [], "usage": {}},
+        ], tools=[tool], approval=answerer)
+        lp.send("go")
+        self.assertEqual(seen["args"], {"command": long_cmd})
 
 
 if __name__ == "__main__":

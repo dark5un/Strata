@@ -12,4 +12,4 @@ Design decisions: docs/harness/adr/. Rules that hold across the package:
     no GPU: python -m unittest discover -s serve/harness -t .
 """
 
-HARNESS_FORMAT_VERSION = 1
+HARNESS_FORMAT_VERSION = 2   # v2: request/header carries the full envelope (M7b)

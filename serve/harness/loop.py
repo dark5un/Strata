@@ -4,8 +4,9 @@ An event-sourced ReAct driver: every turn appends durable brackets to the
 session log; the model request is derived from the surface projection, never
 from a separately stored history. The engine is a callable:
 
-    engine(messages, tools) -> {"content": str|None, "tool_calls": [...],
-                                "usage": {"prompt_tokens": int, "completion_tokens": int}}
+    engine(messages, tools, on_event) -> {"content": str|None, "reasoning": str,
+                                          "tool_calls": [...],
+                                          "usage": {"prompt_tokens": int, "completion_tokens": int}}
 
 In production this wraps the in-process Service (ADR-0002); in tests it is a
 scripted fake (MockEngine style, no GPU). Cancellation is cooperative: a
@@ -13,10 +14,24 @@ threading.Event checked between steps and handed to tool executors.
 
 Policies (approval, compaction) hook the loop at named points; they are not
 branches inside it — the dsh waterfall idea, kept small.
+
+M7 (transcript honesty + observability):
+  * assistant/message carries `reasoning` (durable, human-facing; never fed
+    back into the derived history — token cost, and the Chat tab's server
+    strips reasoning-only turns the same way).
+  * on_stream: process-local delta callback (reasoning/content/tool_call) —
+    the tab paints a provisional bubble while the model works (never logged).
+  * request/header carries the FULL envelope (derived messages + sampling +
+    tool-schema hash): every model request is reconstructable from log+code.
+  * assistant/attempt records failed model calls; step/end carries wall time
+    and the engine's prefill/decode split when it reported one.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -68,7 +83,8 @@ class ToolRunContext:
 class ApprovalRequest:
     call_id: str
     tool: str
-    args_preview: str
+    args: dict                            # FULL arguments: matching and the card both read these (ADR-0010)
+    args_preview: str = ""                # display fallback only, never a matching input
 
 
 @dataclass
@@ -93,6 +109,11 @@ class Loop:
     # when context pressure crosses the threshold the loop compacts before the next step.
     metrics_fn: Callable[[], dict] | None = None
     compact_at: float = 0.80
+    # sampling rides the request/header envelope (M7b: reconstructable requests)
+    sampling: dict = field(default_factory=dict)
+    # on_stream: process-local delta sink (M7a-3): {"kind": "reasoning"|"content"|"tool_call", ...}
+    # — never logged; the manager fans it out to SSE subscribers as synthetic rows.
+    on_stream: Callable[[dict], None] | None = None
 
     def request_cancel(self) -> None:
         """Cooperative cancellation: checked at step boundaries and handed to tool contexts."""
@@ -126,29 +147,60 @@ class Loop:
                     {"name": t.name, "description": t.description, "parameters": t.parameters}
                     for t in self.tools.values()
                 ]
+                step_t0 = time.monotonic()
                 try:
-                    result = normalize_result(self.engine(messages, tool_schemas))
+                    result = normalize_result(self._call_engine(messages, tool_schemas))
                 except Exception as exc:                       # noqa: BLE001 - settle, never kill the server
-                    self.session.append(ev.STEP_END, {"step": steps, "error": str(exc)})
+                    self.session.append(ev.STEP_END, {"step": steps, "error": str(exc),
+                                                      "ms": round((time.monotonic() - step_t0) * 1000)})
                     return self._end_turn(ev.REASON_ERROR, {"message": str(exc)})
                 calls = result.tool_calls
                 self.session.append(ev.ASSISTANT_MESSAGE, {
                     "content": result.content,
+                    "reasoning": result.reasoning or None,     # M7a-1: durable, human-facing (forward-compat field)
                     "tool_calls": calls or None,
                     "usage": result.usage,
                 })
+                step_data: dict = {"step": steps, "ms": round((time.monotonic() - step_t0) * 1000)}
+                timings = (result.usage or {}).get("timings")
+                if timings:                                    # M7b-3: prefill/decode split when the engine reported it
+                    step_data["prompt_ms"] = timings.get("prompt_ms")
+                    step_data["decode_ms"] = timings.get("predicted_ms", timings.get("decode_ms"))
                 if not calls:
-                    self.session.append(ev.STEP_END, {"step": steps})
+                    self.session.append(ev.STEP_END, step_data)
                     self.session.flush()
                     return self._end_turn(ev.REASON_COMPLETED, {})
                 concluded = self._dispatch(calls)
-                self.session.append(ev.STEP_END, {"step": steps})
+                self.session.append(ev.STEP_END, step_data)
                 self.session.flush()
                 if concluded:
                     return self._end_turn(ev.REASON_COMPLETED, {"concluded": True})
             return self._end_turn(ev.REASON_BLOCKED, {"why": "max_steps_per_turn"})
         except Cancelled:
             return self._end_turn(ev.REASON_ABORTED, {"cause": "user"})
+
+    def _call_engine(self, messages: list[dict], tool_schemas: list[dict]):
+        """One model call with the stream sink wired (M7a-3). A failed call appends an
+        assistant/attempt row (M7b-2) before re-raising: a retried turn must not look
+        identical to a clean one."""
+        if self.on_stream is None:
+            t0 = time.monotonic()
+            try:
+                return self.engine(messages, tool_schemas)
+            except Exception as exc:  # noqa: BLE001
+                self.session.append(ev.ASSISTANT_ATTEMPT, {"status": "failed", "error": str(exc),
+                                                           "ms": round((time.monotonic() - t0) * 1000)})
+                raise
+        def on_event(d: dict) -> None:
+            if self.on_stream is not None:
+                self.on_stream(d)
+        t0 = time.monotonic()
+        try:
+            return self.engine(messages, tool_schemas, on_event)
+        except Exception as exc:  # noqa: BLE001
+            self.session.append(ev.ASSISTANT_ATTEMPT, {"status": "failed", "error": str(exc),
+                                                       "ms": round((time.monotonic() - t0) * 1000)})
+            raise
 
     def _maybe_compact(self) -> None:
         """Meter-driven compaction (ADR-0006): fold the meter, read the monitor's
@@ -179,9 +231,17 @@ class Loop:
         sections = [s for s in (fn() for fn in self.system_sections) if s]
         if sections:
             messages.insert(0, {"role": "system", "content": "\n\n".join(sections)})
+        # M7b-1: the full envelope — every model request is reconstructable from
+        # log+code (replay, crash forensics, cache reasoning). The session log is
+        # already treated as sensitive (security audit 2016-10-09); no new exposure.
+        schemas = [{"name": t.name, "parameters": t.parameters} for t in self.tools.values()]
         self.session.append(ev.REQUEST_HEADER, {
             "model": "strata", "message_count": len(messages),
             "tools": sorted(self.tools),
+            "messages": messages,
+            "sampling": dict(self.sampling),
+            "tool_schemas_sha256": hashlib.sha256(
+                json.dumps(schemas, sort_keys=True, ensure_ascii=False).encode()).hexdigest(),
         })
         return messages
 
@@ -200,7 +260,7 @@ class Loop:
                 continue
             if getattr(tool, "needs_approval", True):
                 decision = self._ask_approval(call_id, tool, args)
-                if decision != "allow-once":
+                if decision not in ("allow-once", "yolo"):
                     self._result(call_id, {"text": f"approval {decision}", "is_error": True})
                     continue
             if not tool.concurrency_safe:
@@ -218,7 +278,7 @@ class Loop:
         return concluded["v"]
 
     def _ask_approval(self, call_id: str, tool: ToolDefinition, args: dict) -> str:
-        req = ApprovalRequest(call_id=call_id, tool=tool.name, args_preview=_preview(args))
+        req = ApprovalRequest(call_id=call_id, tool=tool.name, args=args, args_preview=_preview(args))
         if self.approval is None:
             outcome, asked = "unavailable", True          # fail closed: no answerer configured
         else:
@@ -230,7 +290,7 @@ class Loop:
                 outcome, asked = ret
             else:
                 outcome, asked = ret, True               # plain-outcome callbacks always count as an ask
-            if outcome not in ("allow-once", "deny", "cancelled", "unavailable"):
+            if outcome not in ("allow-once", "deny", "cancelled", "unavailable", "yolo"):
                 outcome = "unavailable"
         if asked:
             self.session.append(ev.APPROVAL_ASKED, {"call_id": call_id, "tool": tool.name,
@@ -292,5 +352,7 @@ def _drain(pool: ThreadPoolExecutor) -> None:
 
 
 def _preview(args: dict) -> str:
+    """Display fallback only (the durable asked row's one-liner). Matching and
+    the approval CARD use the full args (ADR-0010); this never gates anything."""
     text = " ".join(str(v) for v in args.values())
     return text[:200]

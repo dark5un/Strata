@@ -28,8 +28,14 @@ ASSISTANT_MESSAGE = "assistant/message"
 TOOL_CALL = "tool/call"
 TOOL_RESULT = "tool/result"
 
-# request reconstruction: full GenerateOptions snapshot per model request
+# request reconstruction: full envelope snapshot per model request (M7b: the
+# derived messages + sampling + a tool-schema hash — every request is
+# reconstructable from log+code). The log is already treated as sensitive.
 REQUEST_HEADER = "request/header"
+
+# failed/retried model calls (M7b): invisible today, a retried turn must not
+# look identical to a clean one
+ASSISTANT_ATTEMPT = "assistant/attempt"
 
 # approvals (fail-closed vocabulary, ADR-0003)
 APPROVAL_ASKED = "approval/asked"
@@ -57,6 +63,11 @@ SUBAGENT_SPAWN = "subagent/spawn"
 
 # preset load failed closed (ADR-0009): unknown/malformed preset -> default + note
 PRESET_WARNING = "preset/warning"
+
+# session label (M7b/D10): a short model summary of the first ask, appended
+# once after the first completed turn; the tab's list prefers it over the
+# truncated first message
+SESSION_TITLE = "session/title"
 
 # turn/end reasons (durable taxonomy; crash repair appends closers, never truncates)
 REASON_COMPLETED = "completed"
@@ -89,4 +100,5 @@ _KNOWN = frozenset({
     TOOL_CALL, TOOL_RESULT, REQUEST_HEADER, APPROVAL_ASKED, APPROVAL_DECIDED,
     COMPACTION_START, COMPACTION_SUMMARY, COMPACTION_END, SESSION_END_SEED,
     PLAN_MODE, GOAL_CHANGE, CONTEXT_PRESSURE, SUBAGENT_SPAWN, PRESET_WARNING,
+    ASSISTANT_ATTEMPT, SESSION_TITLE,
 })

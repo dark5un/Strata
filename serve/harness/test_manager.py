@@ -58,7 +58,7 @@ class ManagerTests(unittest.TestCase):
         wait_idle(mgr, sid)
         types = [r["type"] for r in mgr.live(sid).handle.events]
         self.assertEqual(types[0], ev.USER_MESSAGE)
-        self.assertEqual(types[-1], ev.TURN_END)
+        self.assertIn(ev.TURN_END, types)          # M7: a session/title row may land after it
 
     def test_tool_roundtrip_through_manager(self):
         script = [
@@ -138,7 +138,7 @@ class ManagerTests(unittest.TestCase):
         while not q.empty():
             replayed.append(q.get())
         self.assertEqual(replayed[0]["type"], ev.USER_MESSAGE)
-        self.assertEqual(replayed[-1]["type"], ev.TURN_END)
+        self.assertIn(ev.TURN_END, [r["type"] for r in replayed])   # M7: session/title may land last
         mgr.send(sid, "two")
         wait_idle(mgr, sid)
         streamed = []
@@ -217,16 +217,37 @@ class ManagerTests(unittest.TestCase):
         self.assertGreater(listing[0]["events"], 0)
 
     def test_session_title(self):
-        # M6: the list shows the first real user message, not the hex id
-        mgr = self._mgr([EngineResult(content="a", usage={})])
+        # M6 fallback + M7 D10: the model names the session after its first
+        # turn; the truncated first message is the fallback while there is none
+        mgr = self._mgr([EngineResult(content="a", usage={}),
+                         EngineResult(content="counting harness files", usage={})])
         sid = mgr.new()
         mgr.send(sid, "count the   files\nunder serve/harness please")
         wait_idle(mgr, sid)
-        self.assertEqual(mgr.list_sessions()[0]["title"], "count the files under serve/harness please")
+        self.assertEqual(mgr.list_sessions()[0]["title"], "counting harness files")
         # a fork inherits the title
         kid = mgr.fork(sid)
         by_id = {s["id"]: s for s in mgr.list_sessions()}
-        self.assertEqual(by_id[kid]["title"], "count the files under serve/harness please")
+        self.assertEqual(by_id[kid]["title"], "counting harness files")
+
+    def test_session_title_falls_back_when_model_fails(self):
+        # D10 is best-effort: a throwing title call leaves the truncation label
+        script = [EngineResult(content="a", usage={})]
+
+        def factory():
+            def engine(messages, tools, on_event=None):
+                if len(messages) == 1 and "title for this conversation" in str(messages[0].get("content", "")):
+                    raise RuntimeError("title call exploded")
+                if script:
+                    return script.pop(0)
+                return EngineResult(content="done", usage={})
+            return engine
+        mgr = HarnessManager(self.root / "sessions", factory,
+                             spill_dir=self.root / "spill", workspace_root=self.root)
+        sid = mgr.new()
+        mgr.send(sid, "explain the sse parser")
+        wait_idle(mgr, sid)
+        self.assertEqual(mgr.list_sessions()[0]["title"], "explain the sse parser")
 
     def test_session_title_empty_before_first_message(self):
         mgr = self._mgr([EngineResult(content="a", usage={})])

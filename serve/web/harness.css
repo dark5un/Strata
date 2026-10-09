@@ -5,7 +5,7 @@
 
 .harness-layout {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: var(--h-side, 240px) 4px 1fr;
   gap: var(--st-s-4);
   align-items: stretch;
   flex: 1;
@@ -13,6 +13,9 @@
   padding: var(--st-s-5) var(--st-s-6) var(--st-s-6);
 }
 .harness-sessions { overflow-y: auto; min-height: 0; }
+/* resizable sidebar (M7 D9): a drag separator; width lives in --h-side */
+.harness-resizer { cursor: col-resize; border-radius: var(--st-r-sm); align-self: stretch; }
+.harness-resizer:hover, .harness-resizer:focus-visible { background: var(--st-accent-tint); outline: none; }
 .harness-session {
   display: flex;
   align-items: center;
@@ -90,6 +93,16 @@
 .harness-popover { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
   display: flex; flex-direction: column; gap: var(--st-s-2); padding: var(--st-s-3); min-width: 260px; }
 .harness-popover__actions { display: flex; gap: var(--st-s-2); align-items: center; }
+/* preset manage panel (M7 D7): rows + the editor form over the YAML schema */
+.harness-preset-pop { min-width: 340px; max-width: 420px; }
+.harness-preset-row { display: flex; align-items: center; gap: var(--st-s-2); }
+.harness-preset-row__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-preset-row__actions { display: inline-flex; gap: var(--st-s-1); }
+.harness-preset-row__actions .st-btn { padding: 2px 8px; }
+.harness-preset-tools { display: flex; flex-direction: column; gap: var(--st-s-1); max-height: 220px; overflow-y: auto; }
+.harness-preset-tool { display: flex; align-items: center; gap: var(--st-s-2); font-size: 0.9em; }
+.harness-preset-tool > span { flex: 1; }
+.harness-preset-tool label { display: inline-flex; align-items: center; gap: 4px; }
 .harness-spill-locator { cursor: pointer; color: var(--st-accent); text-decoration: underline dotted; }
 
 /* streaming caret: the transcript's last line while the model works (M6 UX) */
@@ -101,6 +114,16 @@
 
 .harness-approval { border-color: var(--st-warn); background: var(--st-warn-tint); }
 .harness-approval pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }
+/* the ask card shows the FULL payload (M7a-2): scrollable, no cap */
+.harness-approval__full { max-height: 320px; overflow: auto; white-space: pre-wrap;
+  font-family: var(--st-font-mono, monospace); font-size: 0.9em; margin: var(--st-s-2) 0 0; }
+.harness-approval .st-collapse > summary { cursor: pointer; }
+/* yolo banner (ADR-0010 / D6): a standing condition, part of the layout */
+.harness-yolo { display: flex; align-items: center; gap: var(--st-s-2);
+  border: 1px solid var(--st-warn); background: var(--st-warn-tint);
+  border-radius: var(--st-r-md); padding: var(--st-s-2) var(--st-s-3); }
+.harness-yolo .st-icon { color: var(--st-warn); flex: none; }
+#h-state[data-state="yolo"] .st-pill__dot { background: var(--st-warn); }
 /* decided approvals fold to one quiet line (M6 UX): same shape as a tool
    card, no amber surface anymore — the decision is history, not a prompt */
 .harness-approval[data-decided] { border-color: var(--st-line); background: var(--st-surface); padding: 0; }
@@ -128,5 +151,6 @@
 
 @media (max-width: 640px) {
   .harness-layout { grid-template-columns: 1fr; }
+  .harness-resizer { display: none; }
   .harness-sessions { max-height: 160px; }
 }

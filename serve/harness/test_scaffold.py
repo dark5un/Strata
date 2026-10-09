@@ -17,7 +17,7 @@ _STDLIB = set(getattr(sys, "stdlib_module_names", ()))
 
 class ScaffoldTest(unittest.TestCase):
     def test_format_version(self) -> None:
-        self.assertEqual(harness.HARNESS_FORMAT_VERSION, 1)
+        self.assertEqual(harness.HARNESS_FORMAT_VERSION, 2)
 
     def test_loop_core_is_stdlib_only(self) -> None:
         # ADR-0003/0005: the loop core (events/session/loop/approval) must not

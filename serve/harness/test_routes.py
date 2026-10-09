@@ -49,6 +49,13 @@ class RoutesBase(unittest.TestCase):
         self.mgr = HarnessManager(self.root / "sessions", scripted(
             [EngineResult(content="hi", usage={"prompt_tokens": 2, "completion_tokens": 1})]),
             spill_dir=self.root / "spill", workspace_root=self.root)
+        # ADR-0011: CRUD writes to the USER dir — point it at the temp root so the
+        # real ~/.local/share is never touched by tests (presets_dir stays None:
+        # the bundled listing must still resolve)
+        import os
+        self._env_key = "STRATA_HARNESS_PRESET_DIR"
+        self._saved_env = os.environ.get(self._env_key)
+        os.environ[self._env_key] = str(self.root / "user-presets")
         self.svc.harness = self.mgr
         self.httpd = serve(self.svc, port=0)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
@@ -57,6 +64,11 @@ class RoutesBase(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self._tmp.cleanup()
+        import os
+        if self._saved_env is None:
+            os.environ.pop(self._env_key, None)
+        else:
+            os.environ[self._env_key] = self._saved_env
 
     def get(self, path):
         req = urllib.request.Request(self.base + path)
@@ -125,7 +137,7 @@ class SessionCommandTests(RoutesBase):
         types = [r["type"] for r in ev["events"]]
         self.assertIn("user/message", types)
         self.assertIn("assistant/message", types)
-        self.assertEqual(types[-1], "turn/end")
+        self.assertIn("turn/end", types)          # M7: session/title may land after it
         code, listing = self.get("/harness/sessions")
         self.assertEqual([s["id"] for s in listing["sessions"]], [sid])
 
@@ -171,7 +183,9 @@ class SessionCommandTests(RoutesBase):
         self.assertEqual(code, 200)
         code, _ = self.post(f"/harness/session/{sid}/policy", {"mode": "never", "allowlist": []})
         self.assertEqual(code, 200)
-        code, _ = self.post(f"/harness/session/{sid}/policy", {"mode": "yolo"})
+        code, _ = self.post(f"/harness/session/{sid}/policy", {"mode": "yolo", "allowlist": []})
+        self.assertEqual(code, 200)          # ADR-0010: yolo is a valid mode
+        code, _ = self.post(f"/harness/session/{sid}/policy", {"mode": "swarm"})
         self.assertEqual(code, 400)
 
     def test_decide_unknown_call_is_409(self):
@@ -186,6 +200,42 @@ class SessionCommandTests(RoutesBase):
         names = [p["name"] for p in body["presets"]]
         self.assertIn("default", names)
         self.assertIn("researcher", names)          # the bundled example
+        src = {p["name"]: p["source"] for p in body["presets"]}
+        self.assertEqual(src["researcher"], "bundled")
+
+    def test_preset_crud_routes(self):
+        # ADR-0011: create -> read -> list (user badge) -> delete, in the manager's temp dir
+        code, _ = self.post("/harness/presets", {"name": "mine", "persona": "be careful",
+                                                 "tools": {"allow": ["read_file"], "deny": ["shell"]},
+                                                 "description": "my preset"})
+        self.assertEqual(code, 200)
+        code, one = self.get("/harness/preset?name=mine")
+        self.assertEqual(code, 200)
+        self.assertEqual(one["persona"], "be careful")
+        self.assertEqual(one["tools"], {"allow": ["read_file"], "deny": ["shell"]})
+        self.assertEqual(one["source"], "user")
+        _, listing = self.get("/harness/presets")
+        self.assertEqual(next(p for p in listing["presets"] if p["name"] == "mine")["source"], "user")
+        code, _ = self.post("/harness/presets/delete", {"name": "mine"})
+        self.assertEqual(code, 200)
+        code, _ = self.get("/harness/preset?name=mine")
+        self.assertEqual(code, 404)
+
+    def test_preset_validation(self):
+        code, _ = self.post("/harness/presets", {"name": "not a name!"})
+        self.assertEqual(code, 400)
+        code, _ = self.post("/harness/presets", {"name": "default"})
+        self.assertEqual(code, 400)
+        code, _ = self.post("/harness/presets", {"name": "ok", "persona": 5})
+        self.assertEqual(code, 400)
+        code, _ = self.get("/harness/preset?name=nope")
+        self.assertEqual(code, 404)
+
+    def test_tools_route_lists_the_registry(self):
+        code, body = self.get("/harness/tools")
+        self.assertEqual(code, 200)
+        self.assertIn("shell", body["tools"])
+        self.assertIn("read_file", body["tools"])
 
     def test_new_session_preset_validation(self):
         code, _ = self.post("/harness/session", {"preset": 5})

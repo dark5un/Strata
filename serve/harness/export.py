@@ -33,6 +33,8 @@ def to_markdown(handle) -> str:
             who = f"**Subagent message**{'' if not src else f' ({src})'}" if src == "subagent" else "**You**"
             out += [f"{who}: {d.get('content', '')}", ""]
         elif t == ev.ASSISTANT_MESSAGE:
+            if d.get("reasoning"):
+                out += ["<details><summary>Thinking</summary>\n", d["reasoning"], "\n</details>", ""]
             if d.get("content"):
                 out += [f"**Agent**: {d['content']}", ""]
             for call in d.get("tool_calls") or []:
@@ -52,6 +54,8 @@ def to_markdown(handle) -> str:
             out.append(f"- goal {d.get('phase')}: {_one_line(d.get('objective', ''))}")
         elif t == ev.SUBAGENT_SPAWN:
             out.append(f"- subagent spawned: {d.get('child')} (preset {d.get('preset')}, depth {d.get('depth')})")
+        elif t == ev.SESSION_TITLE:
+            out.append(f"- session title: {d.get('text')}")
         elif t == ev.TURN_END:
             if d.get("reason") not in (ev.REASON_COMPLETED, None):
                 out.append(f"- turn {d.get('reason')}")

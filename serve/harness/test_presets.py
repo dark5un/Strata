@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from .presets import DEFAULT_PRESET, Preset, list_presets, load_preset
+from .presets import DEFAULT_PRESET, Preset, delete_preset, list_presets, load_preset, save_preset
 
 
 class PresetTests(unittest.TestCase):
@@ -67,6 +67,60 @@ class PresetTests(unittest.TestCase):
         self._write("broken", ": : :")
         names = [p["name"] for p in list_presets(self.dir)]
         self.assertNotIn("broken", names)
+
+    def test_user_dir_wins_over_bundled(self):
+        # ADR-0011: two dirs, user first
+        user, bundled = self.dir / "user", self.dir / "bundled"
+        user.mkdir()
+        bundled.mkdir()
+        (bundled / "p.yaml").write_text("name: p\npersona: bundled\n", encoding="utf-8")
+        (user / "p.yaml").write_text("name: p\npersona: user\n", encoding="utf-8")
+        import os
+        os.environ["STRATA_HARNESS_PRESET_DIR"] = str(user)
+        try:
+            preset, warning = load_preset("p")
+            self.assertIsNone(warning)
+            self.assertEqual(preset.persona, "user")
+            entries = {p["name"]: p for p in list_presets()}
+            self.assertEqual(entries["p"]["source"], "user")
+            self.assertEqual(entries["researcher"]["source"], "bundled")   # the bundled example still lists
+        finally:
+            del os.environ["STRATA_HARNESS_PRESET_DIR"]
+
+    def test_save_and_delete_roundtrip(self):
+        path = save_preset(self.dir, "mine", persona="be careful", allow=["read_file", "search"],
+                           deny=["shell"], description="my preset")
+        self.assertTrue(path.exists())
+        preset, warning = load_preset("mine", self.dir)
+        self.assertIsNone(warning)
+        self.assertEqual(preset.persona, "be careful")
+        self.assertEqual(preset.description, "my preset")
+        self.assertTrue(preset.permits("read_file"))
+        self.assertFalse(preset.permits("shell"))
+        self.assertTrue(delete_preset(self.dir, "mine"))
+        preset, warning = load_preset("mine", self.dir)
+        self.assertIs(preset, DEFAULT_PRESET)
+        self.assertIn("unknown", warning or "")
+
+    def test_bad_names_rejected(self):
+        for bad in ("", "default", "a/b", "..", "x" * 65, "na me"):
+            with self.assertRaises(ValueError):
+                save_preset(self.dir, bad, persona=None, allow=[], deny=[])
+            with self.assertRaises(ValueError):
+                delete_preset(self.dir, bad)
+
+    def test_edit_bundled_shadows_via_user_copy(self):
+        # the UI's duplicate-to-user flow: same name, user dir wins (ADR-0011)
+        import os
+        os.environ["STRATA_HARNESS_PRESET_DIR"] = str(self.dir)
+        try:
+            save_preset(None, "researcher", persona="my version", allow=[], deny=["delegate"])
+            preset, warning = load_preset("researcher")
+            self.assertIsNone(warning)
+            self.assertEqual(preset.persona, "my version")
+            self.assertTrue(preset.permits("shell"))     # the bundled deny[shell] is gone: user copy is the truth
+        finally:
+            del os.environ["STRATA_HARNESS_PRESET_DIR"]
 
 
 if __name__ == "__main__":

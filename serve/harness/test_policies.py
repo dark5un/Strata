@@ -19,21 +19,50 @@ from .spill import SpillStore, spill_policy
 
 class ApprovalTests(unittest.TestCase):
     def test_policy_modes(self):
-        self.assertEqual(ApprovalPolicy("never").decide("shell", "rm -rf"), "deny")
-        self.assertEqual(ApprovalPolicy("never", ["shell:echo*"]).decide("shell", "echo hi"), "allow-once")
-        self.assertEqual(ApprovalPolicy("ask").decide("shell", "x"), "ask")
-        self.assertEqual(ApprovalPolicy("allowlist", ["read*"]).decide("read_file", ""), "allow-once")
-        self.assertEqual(ApprovalPolicy("allowlist", ["read*"]).decide("shell", ""), "ask")
+        self.assertEqual(ApprovalPolicy("never").decide("shell", {"command": "rm -rf"}), "deny")
+        self.assertEqual(ApprovalPolicy("never", ["shell:echo*"]).decide("shell", {"command": "echo hi"}), "allow-once")
+        self.assertEqual(ApprovalPolicy("ask").decide("shell", {}), "ask")
+        self.assertEqual(ApprovalPolicy("allowlist", ["read*"]).decide("read_file", {}), "allow-once")
+        self.assertEqual(ApprovalPolicy("allowlist", ["read*"]).decide("shell", {}), "ask")
+
+    def test_yolo_auto_allows(self):
+        # ADR-0010: every gated tool auto-allows, no allowlist needed
+        self.assertEqual(ApprovalPolicy("yolo").decide("shell", {"command": "rm -rf /"}), "yolo")
+
+    def test_allowlist_matches_full_args_not_preview(self):
+        # ADR-0010 hazard fix: a pattern must see the whole command, not 200 chars of it
+        long_cmd = "echo a && " + "b" * 500
+        self.assertEqual(ApprovalPolicy("allowlist", ["shell:echo a && b*"]).decide("shell", {"command": long_cmd}),
+                         "allow-once")
+        # and the canonical form for file tools is tool:path
+        self.assertEqual(ApprovalPolicy("allowlist", ["write_file:scratch/*"]).decide(
+            "write_file", {"path": "scratch/x.py", "content": "y" * 10_000}), "allow-once")
+        self.assertEqual(ApprovalPolicy("allowlist", ["write_file:other/*"]).decide(
+            "write_file", {"path": "scratch/x.py", "content": "y"}), "ask")
+
+    def test_yolo_never_survives_restart(self):
+        # ADR-0010: a durable yolo folds back to ask on attach
+        h = create(Path(tempfile.mkdtemp()))
+        h.append("approval/policy", {"mode": "yolo", "allowlist": []})
+        policy = fold_policy(h.events)
+        self.assertEqual(policy.mode, "ask")
+        self.assertEqual(policy.decide("shell", {"command": "ls"}), "ask")
 
     def test_broker_fail_closed(self):
         class Req:
-            tool, args_preview = "shell", "rm"
+            tool, args, args_preview = "shell", {"command": "rm"}, "rm"
         self.assertEqual(ApprovalBroker(ApprovalPolicy("ask")).request(Req()), ("unavailable", True))
         self.assertEqual(ApprovalBroker(ApprovalPolicy("never")).request(Req()), ("deny", False))
 
+    def test_broker_yolo_no_human(self):
+        class Req:
+            tool, args, args_preview = "shell", {"command": "ls"}, "ls"
+        outcome, asked = ApprovalBroker(ApprovalPolicy("yolo")).request(Req())
+        self.assertEqual((outcome, asked), ("yolo", False))
+
     def test_broker_outcome_validation(self):
         class Req:
-            tool, args_preview = "shell", "ls"
+            tool, args, args_preview = "shell", {"command": "ls"}, "ls"
         broker = ApprovalBroker(ApprovalPolicy("ask"), answerer=lambda r: "yes-please")
         self.assertEqual(broker.request(Req()), ("unavailable", True))
 
@@ -42,7 +71,7 @@ class ApprovalTests(unittest.TestCase):
         h.append("approval/policy", {"mode": "allowlist", "allowlist": ["shell:echo*"]})
         policy = fold_policy(h.events)
         self.assertEqual(policy.mode, "allowlist")
-        self.assertEqual(policy.decide("shell", "echo 1"), "allow-once")
+        self.assertEqual(policy.decide("shell", {"command": "echo 1"}), "allow-once")
 
 
 class MeterTests(unittest.TestCase):

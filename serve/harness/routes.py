@@ -53,6 +53,24 @@ def handle_get(handler, svc, path: str) -> None:
         from .presets import list_presets
         handler._json(200, {"presets": list_presets(mgr.presets_dir)})
         return
+    if rest == "preset":
+        # read one preset's full schema for the editor (ADR-0011)
+        from .presets import find_preset_file, load_preset
+        name = (query.get("name") or [""])[0]
+        pfile, source = find_preset_file(name, mgr.presets_dir)
+        if pfile is None:
+            _bad(handler, 404, f"no preset {name!r}")
+            return
+        preset, _warning = load_preset(name, mgr.presets_dir)
+        handler._json(200, {"name": preset.name, "persona": preset.persona, "description": preset.description,
+                            "tools": {"allow": preset.allow, "deny": preset.deny}, "source": source})
+        return
+    if rest == "tools":
+        # the live registry's tool names: the preset editor's checkboxes (ADR-0011)
+        from .tools import default_registry
+        names = sorted(t.name for t in default_registry(root=mgr.workspace_root))
+        handler._json(200, {"tools": names})
+        return
     if rest == "export":
         sid = (query.get("session") or [""])[0]
         fmt = (query.get("format") or ["markdown"])[0]
@@ -91,6 +109,12 @@ def handle_get(handler, svc, path: str) -> None:
             _bad(handler, 404, f"no session {sid!r}")
             return
         rows = live.handle.snapshot(since)
+        # the live approval policy (M7d): the tab restores the select + yolo banner
+        # on boot/reconnect instead of guessing from browser state
+        policy = getattr(live.loop, "_broker", None)
+        policy = getattr(policy, "policy", None) if policy is not None else None
+        policy_json = ({"mode": policy.mode, "allowlist": policy.allowlist}
+                       if policy is not None else {"mode": "ask", "allowlist": []})
         # pending asks/questions are process-local (the durable asked/decided rows
         # only land once answered): a reconnecting client needs them to redraw cards
         pending = [{"type": "approval/ask", "seq": -1, "time": None, "data": a}
@@ -101,7 +125,8 @@ def handle_get(handler, svc, path: str) -> None:
         pending += [{"type": "question/ask", "seq": -1, "time": None,
                      "data": {"qid": q.qid, "question": q.question, "options": q.options, "multi": q.multi}}
                     for q in live.board.pending()]
-        handler._json(200, {"events": rows, "pending": pending, "last_seq": live.handle.last_seq, "busy": live.busy})
+        handler._json(200, {"events": rows, "pending": pending, "last_seq": live.handle.last_seq,
+                            "busy": live.busy, "policy": policy_json})
         return
     if rest == "stream":
         _stream(handler, mgr, (query.get("session") or [""])[0])
@@ -189,6 +214,38 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
                 raise ValueError("session: preset must be a name string")
             handler._json(200, {"id": mgr.new(preset=preset.strip())})
             return
+        if rest == "presets":
+            # create/update in the USER dir (ADR-0011); the YAML file is the truth
+            from .presets import save_preset
+            name = req.get("name")
+            if not isinstance(name, str):
+                raise ValueError("presets: {\"name\": ..., \"persona\": ..., \"tools\": {...}}")
+            tools = req.get("tools") or {}
+            if not isinstance(tools, dict):
+                raise ValueError("presets: tools must be an object")
+            allow = tools.get("allow") or []
+            deny = tools.get("deny") or []
+            if not isinstance(allow, list) or not isinstance(deny, list):
+                raise ValueError("presets: tools.allow/deny must be lists")
+            persona = req.get("persona")
+            description = req.get("description")
+            if persona is not None and not isinstance(persona, str):
+                raise ValueError("presets: persona must be a string")
+            if description is not None and not isinstance(description, str):
+                raise ValueError("presets: description must be a string")
+            pfile = save_preset(mgr.presets_dir, name.strip(), persona=persona,
+                                allow=[str(t) for t in allow], deny=[str(t) for t in deny],
+                                description=description)
+            handler._json(200, {"ok": True, "name": name.strip(), "path": str(pfile)})
+            return
+        if rest == "presets/delete":
+            # the server has no DELETE verb; the route is POST (ADR-0011: user dir only)
+            from .presets import delete_preset
+            name = req.get("name")
+            if not isinstance(name, str):
+                raise ValueError("presets/delete: {\"name\": ...}")
+            handler._json(200, {"deleted": delete_preset(mgr.presets_dir, name.strip())})
+            return
         if len(parts) == 3 and parts[0] == "session":
             sid, action = parts[1], parts[2]
             if action == "message":
@@ -224,8 +281,8 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
             elif action == "policy":
                 mode = req.get("mode")
                 allowlist = req.get("allowlist") or []
-                if mode not in ("ask", "never", "allowlist") or not isinstance(allowlist, list):
-                    raise ValueError("policy: mode ask|never|allowlist, allowlist a list of patterns")
+                if mode not in ("ask", "never", "allowlist", "yolo") or not isinstance(allowlist, list):
+                    raise ValueError("policy: mode ask|never|allowlist|yolo, allowlist a list of patterns")
                 mgr.set_policy(sid, str(mode), [str(p) for p in allowlist])
                 handler._json(200, {"ok": True})
             elif action == "mode":

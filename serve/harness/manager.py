@@ -59,9 +59,15 @@ class Live:
 
 
 def _session_title(events: list[dict]) -> str:
-    """A human label for the session list: the first real user message,
-    one line, truncated. Forks inherit it (the prefix carries the message);
-    subagent-sourced messages don't title their parent."""
+    """A human label for the session list: the durable model title when one
+    exists (M7 D10), else the first real user message, one line, truncated.
+    Forks inherit it (the prefix carries both); subagent-sourced messages
+    don't title their parent."""
+    for row in reversed(events):
+        if row["type"] == ev.SESSION_TITLE:
+            text = str((row.get("data") or {}).get("text", "")).strip()
+            if text:
+                return " ".join(text.split())[:60]
     for row in events:
         if row["type"] == ev.USER_MESSAGE and not (row.get("data") or {}).get("source"):
             text = str((row.get("data") or {}).get("content", "")).strip()
@@ -73,14 +79,15 @@ def _session_title(events: list[dict]) -> str:
 class HarnessManager:
     def __init__(self, sessions_dir: Path, engine_factory, *, spill_dir: Path | None = None,
                  workspace_root: Path | None = None, metrics_fn=None,
-                 presets_dir: Path | None = None) -> None:
+                 presets_dir: Path | None = None, sampling: dict | None = None) -> None:
         self.dir = sessions_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.engine_factory = engine_factory          # () -> engine callable
         self.spill_dir = spill_dir or (sessions_dir.parent / "spill")
         self.workspace_root = workspace_root
         self.metrics_fn = metrics_fn                  # Service.metrics(): the monitor JSON (ADR-0002)
-        self.presets_dir = presets_dir                # None -> serve/harness/presets/ (ADR-0009)
+        self.presets_dir = presets_dir                # None -> user dir + bundled (ADR-0011)
+        self.sampling = dict(sampling or {})          # rides the request/header envelope (M7b)
         self._live: dict[str, Live] = {}
         self._lock = threading.RLock()   # reentrant: live() -> _attach() reads the live map for parent lookups
 
@@ -174,11 +181,17 @@ class HarnessManager:
                 ok = preset.permits(name) and (parent_effective is None or name in parent_effective)
                 if not ok:
                     del tools[name]
+        # the loop's stream sink publishes through the Live once it exists (M7a-3)
+        live_holder: dict = {"v": None}
         loop = Loop(engine=self.engine_factory(), tools=tools, session=h,
                     approval=broker.request,
                     spill=spill_store,
                     inbox=Inbox(),
                     metrics_fn=self.metrics_fn,
+                    sampling=self.sampling,
+                    on_stream=lambda d, live_ref=live_holder: live_ref["v"].publish(
+                        {"type": "stream/delta", "seq": -1, "time": time.time(), "data": d})
+                    if live_ref["v"] is not None else None,
                     system_sections=[lambda h=h: plan_section(fold_plan(h.snapshot())),
                                      lambda h=h: goal_section(fold_goal(h.snapshot())),
                                      lambda p=preset: p.section()])
@@ -187,6 +200,7 @@ class HarnessManager:
         loop._board = board                       # type: ignore[attr-defined]
         live = Live(session_id=session_id, handle=h, loop=loop, board=board, approvals=approvals,
                     channel=channel, deliver=channel.deliver)
+        live_holder["v"] = live
         h.on_append = live.publish                # every durable row streams the moment it lands
         return live
 
@@ -216,6 +230,32 @@ class HarnessManager:
         live.worker = threading.Thread(target=self._drive, args=(live, content, source), daemon=True)
         live.worker.start()
 
+    def _maybe_title(self, live: Live) -> None:
+        """M7 D10: name the session with a short model summary after its first
+        completed turn. Best-effort: any failure leaves the truncation fallback
+        (_session_title reads the first user message). One call per session:
+        a durable session/title row means we never regenerate."""
+        h = live.handle
+        if h.header.get("origin") != "subagent" and not any(
+                r["type"] == ev.SESSION_TITLE for r in h.events):
+            first = next((str(r["data"].get("content", "")) for r in h.events
+                          if r["type"] == ev.USER_MESSAGE and not r["data"].get("source")), "")
+            if not first:
+                return
+            try:
+                raw = live.loop.engine(
+                    [{"role": "user", "content": "Reply with a title for this conversation: "
+                     "2-6 words, lowercase, no punctuation, no quotes.\n\n" + first[:500]}], None)
+                from .loop import normalize_result
+                text = normalize_result(raw).content.strip().strip('"').strip()
+                text = " ".join(text.split())[:60]
+                if text and len(text) > 1:
+                    h.append(ev.SESSION_TITLE, {"text": text, "by": "model"})
+                    h.flush()
+                    live.publish(h.snapshot()[-1])
+            except Exception:  # noqa: BLE001 - a title is never worth an error row
+                pass
+
     def _drive(self, live: Live, first_content: str, first_source: str | None = None) -> None:
         """Turn driver: run the first turn, then keep the session moving at idle
         points — queued followups first, then goal rounds while the goal is active.
@@ -232,6 +272,7 @@ class HarnessManager:
                 else:
                     h.append(ev.USER_MESSAGE, {"content": content, "source": source})
                     live.loop.run_turn()
+                self._maybe_title(live)
                 content, source = None, None
                 if live.loop.cancel.is_set():
                     break                       # a cancelled turn stops the driver chain too
@@ -373,6 +414,8 @@ class HarnessManager:
         live = self.live(session_id)
         live.handle.append("approval/policy", {"mode": mode, "allowlist": allowlist})
         live.handle.flush()
+        # the live session runs the mode as set; a yolo never survives a restart
+        # because fold_policy (attach) maps a durable yolo back to ask (ADR-0010)
         live.loop._broker.policy = ApprovalPolicy(mode, allowlist)   # type: ignore[attr-defined]
 
     def set_mode(self, session_id: str, *, plan: bool | None = None,
@@ -431,14 +474,15 @@ class ApprovalChannel:
 
     def answerer(self, req) -> str:
         dq: queue.Queue = queue.Queue()
+        ask = {"call_id": req.call_id, "tool": req.tool, "args": req.args,
+               "preview": req.args_preview}          # full args: the card shows what runs (ADR-0010)
         with self._lock:
             self._decisions[req.call_id] = dq
-            self._asks[req.call_id] = {"call_id": req.call_id, "tool": req.tool, "preview": req.args_preview}
-        self.notices.put({"call_id": req.call_id, "tool": req.tool, "preview": req.args_preview})
+            self._asks[req.call_id] = ask
+        self.notices.put(ask)
         if self.relay is not None:
             parent_notices, child_sid = self.relay
-            parent_notices.put({"call_id": req.call_id, "tool": req.tool, "preview": req.args_preview,
-                                "session": child_sid})
+            parent_notices.put({**ask, "session": child_sid})
         try:
             decision = dq.get(timeout=3600)
         except queue.Empty:
