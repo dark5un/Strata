@@ -92,6 +92,13 @@
 .harness-popover__actions { display: flex; gap: var(--st-s-2); align-items: center; }
 .harness-spill-locator { cursor: pointer; color: var(--st-accent); text-decoration: underline dotted; }
 
+/* streaming caret: the transcript's last line while the model works (M6 UX) */
+.harness-typing { display: flex; align-items: center; gap: var(--st-s-2); padding: var(--st-s-1) 0; }
+.harness-typing::after { content: ""; width: 7px; height: 15px; background: var(--st-accent);
+                         animation: harness-blink 1s steps(2) infinite; }
+@keyframes harness-blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .harness-typing::after { animation: none; } }
+
 .harness-approval { border-color: var(--st-warn); background: var(--st-warn-tint); }
 .harness-approval pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }
 

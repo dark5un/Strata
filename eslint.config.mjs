@@ -10,7 +10,7 @@ export default [
         // provided by app.js (the tab is lazy-loaded by loadHarness())
         $: "readonly", icon: "readonly", esc: "readonly", fmt: "readonly",
         headers: "readonly", store: "readonly", toast: "readonly",
-        lastMetrics: "readonly",
+        lastMetrics: "readonly", markdown: "readonly", copyText: "readonly",
         // browser
         document: "readonly", window: "readonly", fetch: "readonly",
         AbortController: "readonly", TextDecoder: "readonly",

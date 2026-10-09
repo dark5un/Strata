@@ -48,11 +48,12 @@ async function loadSessions() {
     row.type = "button";
     row.className = "harness-session" + (s.id === H.sid ? " is-active" : "") + (s.origin === "subagent" ? " is-sub" : "");
     row.dataset.sid = s.id;
+    row.title = `${s.id} · ${s.error ? "unreadable" : `${s.events} events`}`;
     row.innerHTML = `${icon(s.origin === "subagent" ? "experts" : "tool", "st-icon st-icon--sm")}` +
-      `<span>${esc(s.id)}</span>` +
+      `<span>${esc(s.title || s.id)}</span>` +
+      (s.error ? `<span class="st-badge st-badge--error">unreadable</span>` : "") +
       (s.origin === "subagent" ? `<span class="st-badge st-badge--reading" title="subagent of ${esc(s.parent || "")}">sub</span>` : "") +
-      (s.preset && s.preset !== "default" ? `<span class="muted small" title="preset">${esc(s.preset)}</span>` : "") +
-      `<span class="muted small">${s.error ? "unreadable" : `${s.events} events`}</span>` +
+      (s.preset && s.preset !== "default" ? `<span class="st-badge st-badge--reading" title="preset">${esc(s.preset)}</span>` : "") +
       (s.busy ? `<span class="st-badge st-badge--generating">running</span>` : "");
     row.onclick = () => openSession(s.id);
     box.appendChild(row);
@@ -148,6 +149,7 @@ $("h-export").onclick = () => { if (H.sid) exportPopover(); };
 function openSession(sid) {
   H.sid = sid;
   store.set("harness.session", sid);
+  composerEnabled(true);   // boot may have disabled it (no sessions yet): opening one must re-enable
   H.lastSeq = -1;
   H.seenAsks = new Set();
   H.buffer = [];
@@ -266,7 +268,7 @@ function paint(row) {
     }
     H.busy = true; setBusy(true);
   } else if (t === "assistant/message") {
-    if (d.content) el("st-msg st-msg--assistant", `<div class="st-bubble">${esc(d.content)}</div>`);
+    if (d.content) el("st-msg st-msg--assistant", `<div class="st-bubble">${markdown(d.content)}</div>`);
     if (d.usage) showUsage(d.usage);
   } else if (t === "tool/call") {
     toolCard(d);
@@ -332,17 +334,57 @@ function subagentCard(d) {
 }
 
 // tool cards: the Chat tab's .tool-call pattern (st-collapse + badge + pre)
+// a one-line preview per tool: what it touches, not the raw JSON dump
+function toolPreview(d) {
+  const a = d.arguments || {};
+  const one = (s) => String(s).replace(/\s+/g, " ").trim().slice(0, 120);
+  if (d.name === "shell") return one(a.command || "");
+  if (d.name === "read_file" || d.name === "write_file" || d.name === "edit_file")
+    return [one(a.path || a.file_path || ""), a.limit ? `first ${a.limit} lines` : "",
+            a.content ? `${String(a.content).length} chars` : ""].filter(Boolean).join(" · ");
+  if (d.name === "search" || d.name === "search_files") return `${one(a.pattern || a.query || "")} in ${one(a.path || ".")}`;
+  const first = Object.entries(a)[0];
+  return first ? one(`${first[0]}: ${first[1]}`) : "";
+}
+
 function toolCard(d) {
   const card = el("harness-tool-wrap",
     `<details class="st-collapse tool-call" data-state="running" open>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}` +
     `<span class="tool-call__name" title="${esc(d.name)}">${esc(d.name)}</span>` +
-    `<span class="tool-call__preview muted">${esc(JSON.stringify(d.arguments)).slice(0, 200)}</span>` +
+    `<span class="tool-call__preview muted">${esc(toolPreview(d))}</span>` +
     `<span class="st-badge st-badge--generating">running</span>` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
-    `<div class="st-collapse__body"><div class="tool-call__label">Arguments</div>` +
+    `<div class="st-collapse__body"><div class="tool-call__label">Arguments <span class="muted">&middot; ${esc(argsKind(d))}</span></div>` +
     `<pre class="tool-call__pre">${esc(JSON.stringify(d.arguments, null, 1))}</pre></div></details>`);
   card.dataset.callId = d.call_id;
+}
+
+// what kind of payload each section holds (M6 UX: the user asked for a
+// content descriptor next to Arguments/Result)
+function argsKind(d) {
+  const a = d.arguments || {};
+  if (d.name === "shell") return "shell command";
+  if (d.name === "read_file") return "file path" + (a.limit ? ` + line limit` : "");
+  if (d.name === "write_file") return `file path + ${fmt(String(a.content || "").length)} chars`;
+  if (d.name === "edit_file") return "path + find/replace pair";
+  if (d.name === "search") return "pattern + path";
+  const keys = Object.keys(a);
+  return keys.length ? `${keys.length} field${keys.length > 1 ? "s" : ""}: ${keys.slice(0, 3).join(", ")}` : "no arguments";
+}
+
+function resultKind(text) {
+  const t = String(text || "");
+  const lines = t ? t.split("\n").length : 0;
+  const size = `${fmt(t.length)} chars, ${lines} line${lines === 1 ? "" : "s"}`;
+  const head = t.trimStart();
+  if (head.startsWith("{") || head.startsWith("[")) {
+    try { JSON.parse(head); return `JSON (${size})`; } catch { /* not valid JSON */ }
+  }
+  if (/^total \d+\n(d|l|c|-)/m.test(t) || /^\s*[dlc-][rwx-]{9}/m.test(t)) return `directory listing (${size})`;
+  if (/^\s*[\d.]+\s+\S+$/m.test(t) && lines > 1) return `tabular output (${size})`;
+  if (/^diff --git /m.test(t)) return `diff (${size})`;
+  return `plain text (${size})`;
 }
 
 function fillToolCard(d) {
@@ -352,10 +394,13 @@ function fillToolCard(d) {
   const body = details ? details.querySelector(".st-collapse__body") : null;
   if (!body) return;
   body.insertAdjacentHTML("beforeend",
-    `<div class="tool-call__label">${d.is_error ? "Error" : "Result"}` +
+    `<div class="tool-call__label">${d.is_error ? "Error" : "Result"} <span class="muted">&middot; ${esc(resultKind(d.text))}</span>` +
     `${d.spill ? ` &middot; <span class="st-badge st-badge--reading">spilled</span> ` +
       `<code class="harness-spill-locator" title="copy locator">${esc(d.spill.locator)}</code>` : ""}</div>` +
     `<pre class="tool-call__pre">${esc(d.text)}</pre>`);
+  // a result that lands while the reader is at the bottom should stay visible
+  const stick = nearBottom();
+  if (stick) scrollDown(true);
   if (d.spill) {
     // the summary line stays visible when collapsed: say "spilled" there too
     details.querySelector("summary").insertAdjacentHTML("beforeend",
@@ -371,6 +416,7 @@ function fillToolCard(d) {
   details.dataset.state = d.is_error ? "error" : "done";
   stateBadge.className = "st-badge " + (d.is_error ? "st-badge--error" : "st-badge--reading");
   stateBadge.textContent = d.is_error ? "error" : "done";
+  stateBadge.title = resultKind(d.text);   // D4: the collapsed row carries the size in the badge tooltip
   if (d.is_error) details.open = true;
 }
 
@@ -379,6 +425,17 @@ function setBusy(busy) {
   const pill = $("h-state");
   pill.dataset.state = busy ? "generating" : "idle";
   $("h-state-text").textContent = busy ? "working" : "idle";
+  // a live caret at the end of the transcript while the model works (M6 UX)
+  const box = $("h-transcript");
+  const caret = box.querySelector(".harness-typing");
+  if (busy && !caret) {
+    const d = document.createElement("div");
+    d.className = "harness-typing muted small";
+    d.textContent = "working";
+    d.setAttribute("aria-hidden", "true");   // the state pill already announces busy (D6 a11y)
+    box.appendChild(d);
+    scrollDown(true);
+  } else if (!busy && caret) caret.remove();
   $("h-cancel").hidden = !busy;
   // stop cascades to running subagents (ADR-0008): say so when they exist
   const kids = H.sessions.filter((s) => s.parent === H.sid && s.busy).length;
@@ -397,6 +454,9 @@ function showUsage(u) {
   $("h-ctx").innerHTML = max
     ? `${warn ? `${icon("warning", "st-icon st-icon--sm")} near the limit: ` : ""}context ${pct}% (${fmt(used)}/${fmt(max)})`
     : `prompt ${fmt(used)} tokens`;
+  // honesty (M6): the denominator is THIS server's engine window; when the
+  // harness runs beside a different model (HTTP-attached), say which it is
+  $("h-ctx").title = max ? `of this server's engine context window (${fmt(max)} tokens)` : "";
   $("h-ctx").classList.toggle("harness-ctx--warn", warn);
 }
 
@@ -404,7 +464,7 @@ function showUsage(u) {
 function approvalCard(d) {
   const card = el("harness-approval",
     `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
-    `<span class="card-title">approve ${esc(d.tool)}?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+    `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
     `<pre class="st-code">${esc(d.preview || "")}</pre>` +
     `<div class="harness-approval__actions">` +
     `<button class="st-btn st-btn--primary" data-a="allow-once">Allow once</button>` +
@@ -590,6 +650,12 @@ $("h-composer").onsubmit = async (e) => {
 // parity with the Chat composer: Enter sends, Shift+Enter is a new line
 $("h-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("h-composer").requestSubmit(); }
+});
+
+// code blocks rendered by markdown() get the Chat tab's copy button behaviour
+$("h-transcript").addEventListener("click", (e) => {
+  const cc = e.target.closest("[data-code-copy]");
+  if (cc) copyText(cc.closest(".st-code").querySelector("pre").textContent, cc);
 });
 
 $("h-cancel").onclick = async () => {

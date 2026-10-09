@@ -58,6 +58,18 @@ class Live:
                 q.put(row)
 
 
+def _session_title(events: list[dict]) -> str:
+    """A human label for the session list: the first real user message,
+    one line, truncated. Forks inherit it (the prefix carries the message);
+    subagent-sourced messages don't title their parent."""
+    for row in events:
+        if row["type"] == ev.USER_MESSAGE and not (row.get("data") or {}).get("source"):
+            text = str((row.get("data") or {}).get("content", "")).strip()
+            if text:
+                return " ".join(text.split())[:60]
+    return ""
+
+
 class HarnessManager:
     def __init__(self, sessions_dir: Path, engine_factory, *, spill_dir: Path | None = None,
                  workspace_root: Path | None = None, metrics_fn=None,
@@ -88,7 +100,8 @@ class HarnessManager:
                 h = live.handle.header
                 out.append({"id": sid, "busy": live.busy, "events": len(live.handle.events),
                             "origin": h.get("origin", "user"), "parent": h.get("parentSession"),
-                            "preset": h.get("agentPreset", "default")})
+                            "preset": h.get("agentPreset", "default"),
+                            "title": _session_title(live.handle.events)})
                 continue
             try:
                 h = open_session(self.dir, sid)
@@ -97,7 +110,8 @@ class HarnessManager:
                 continue
             out.append({"id": sid, "busy": False, "events": len(h.events),
                         "origin": h.header.get("origin", "user"), "parent": h.header.get("parentSession"),
-                        "preset": h.header.get("agentPreset", "default")})
+                        "preset": h.header.get("agentPreset", "default"),
+                        "title": _session_title(h.events)})
         return out
 
     def live(self, session_id: str) -> Live:

@@ -216,6 +216,23 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(listing[0]["id"], sid)
         self.assertGreater(listing[0]["events"], 0)
 
+    def test_session_title(self):
+        # M6: the list shows the first real user message, not the hex id
+        mgr = self._mgr([EngineResult(content="a", usage={})])
+        sid = mgr.new()
+        mgr.send(sid, "count the   files\nunder serve/harness please")
+        wait_idle(mgr, sid)
+        self.assertEqual(mgr.list_sessions()[0]["title"], "count the files under serve/harness please")
+        # a fork inherits the title
+        kid = mgr.fork(sid)
+        by_id = {s["id"]: s for s in mgr.list_sessions()}
+        self.assertEqual(by_id[kid]["title"], "count the files under serve/harness please")
+
+    def test_session_title_empty_before_first_message(self):
+        mgr = self._mgr([EngineResult(content="a", usage={})])
+        mgr.new()
+        self.assertEqual(mgr.list_sessions()[0]["title"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
