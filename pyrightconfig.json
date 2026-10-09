@@ -1,5 +1,7 @@
 {
   "include": ["serve/harness"],
+  "venvPath": ".",
+  "venv": ".venv",
   "pythonVersion": "3.10",
   "typeCheckingMode": "standard",
   "reportMissingImports": "error",

@@ -71,6 +71,22 @@
 .harness-approval { border-color: var(--st-warn); background: var(--st-warn-tint); }
 .harness-approval pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }
 
+/* subagent settlement card (M4): distinct from a user bubble, same primitives */
+.harness-subagent {
+  border: 1px solid var(--st-line);
+  border-radius: var(--st-r-md);
+  padding: var(--st-s-2) var(--st-s-3);
+  background: var(--st-accent-tint);
+}
+.harness-subagent__head { display: flex; align-items: center; gap: var(--st-s-2); }
+.harness-subagent__body { margin-top: var(--st-s-2); white-space: pre-wrap; }
+.harness-session-link {
+  border: 0; background: transparent; padding: 0; font: inherit;
+  color: var(--st-accent); text-decoration: underline dotted; cursor: pointer;
+}
+/* subagent rows sit indented in the session list */
+.harness-session.is-sub { padding-left: var(--st-s-4); }
+
 @media (max-width: 640px) {
   .harness-layout { grid-template-columns: 1fr; }
   .harness-sessions { max-height: 160px; }

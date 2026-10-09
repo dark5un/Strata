@@ -49,6 +49,35 @@ def handle_get(handler, svc, path: str) -> None:
     if rest == "sessions":
         handler._json(200, {"sessions": mgr.list_sessions()})
         return
+    if rest == "presets":
+        from .presets import list_presets
+        handler._json(200, {"presets": list_presets(mgr.presets_dir)})
+        return
+    if rest == "export":
+        sid = (query.get("session") or [""])[0]
+        fmt = (query.get("format") or ["markdown"])[0]
+        if fmt not in ("markdown", "jsonl"):
+            _bad(handler, 400, "export: format must be markdown|jsonl")
+            return
+        try:
+            live = mgr.live(sid)
+        except FileNotFoundError:
+            _bad(handler, 404, f"no session {sid!r}")
+            return
+        from . import export as _export
+        if fmt == "jsonl":
+            body, ctype, name = _export.to_jsonl(live.handle), "application/x-ndjson", f"{sid}.jsonl"
+        else:
+            body, ctype, name = _export.to_markdown(live.handle), "text/markdown", f"{sid}.md"
+        data = body.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", f"{ctype}; charset=utf-8")
+        handler.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        handler._cors()
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+        return
     if rest == "events":
         sid = (query.get("session") or [""])[0]
         try:
@@ -150,7 +179,10 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
     parts = rest.split("/")
     try:
         if rest == "session":
-            handler._json(200, {"id": mgr.new()})
+            preset = req.get("preset", "default")
+            if not isinstance(preset, str) or not preset.strip():
+                raise ValueError("session: preset must be a name string")
+            handler._json(200, {"id": mgr.new(preset=preset.strip())})
             return
         if len(parts) == 3 and parts[0] == "session":
             sid, action = parts[1], parts[2]

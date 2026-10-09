@@ -69,3 +69,5 @@ build-vision-cuda12.bat
 .prowl/setup-applies.json
 .prowl-setup.lock
 # /prowl-agent: derived state
+
+.prowl/

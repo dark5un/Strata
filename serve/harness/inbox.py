@@ -11,7 +11,9 @@ import threading
 from dataclasses import dataclass
 
 TARGETS = ("next-turn", "next-step")
-PRESETS = ("followup", "steer", "inject")
+# "subagent": a settled child's result wakes the parent (ADR-0008); it lands
+# as a user/message with source="subagent", like followup/goal ride the driver.
+PRESETS = ("followup", "steer", "inject", "subagent")
 
 
 @dataclass
