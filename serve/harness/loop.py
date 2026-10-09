@@ -82,10 +82,17 @@ class Loop:
     approval: Callable[[ApprovalRequest], str | tuple[str, bool]] | None = None
     # pre_step: (loop, inbox) -> optional extra user messages to inject before the step.
     pre_step: list[Callable] = field(default_factory=list)
+    # system_sections: () -> str | None, joined into one system message at derive time
+    # (plan/goal guidance rides these; ADR-0007 keeps modes soft, prompt-only).
+    system_sections: list[Callable] = field(default_factory=list)
     max_steps_per_turn: int = 64
     spill: SpillStore | None = None        # oversized tool output -> file + locator
     inbox: Inbox | None = None             # steer/inject between steps
     cancel: threading.Event = field(default_factory=threading.Event)  # cooperative turn cancel
+    # meter-driven compaction (ADR-0006): metrics_fn is Service.metrics() (ADR-0002);
+    # when context pressure crosses the threshold the loop compacts before the next step.
+    metrics_fn: Callable[[], dict] | None = None
+    compact_at: float = 0.80
 
     def request_cancel(self) -> None:
         """Cooperative cancellation: checked at step boundaries and handed to tool contexts."""
@@ -97,6 +104,7 @@ class Loop:
         return self.run_turn()
 
     def run_turn(self) -> dict:
+        self.cancel.clear()                       # a fresh turn: a previous cancel must not poison it
         self.session.append(ev.TURN_START, {})
         self.session.flush()
         steps = 0
@@ -111,6 +119,7 @@ class Loop:
                             self.session.append(ev.USER_MESSAGE, {"content": msg.content, "source": msg.preset})
                 for hook in self.pre_step:
                     hook(self)
+                self._maybe_compact()
                 self.session.append(ev.STEP_START, {"step": steps})
                 messages = self._derive_with_request_header()
                 tool_schemas = [
@@ -141,9 +150,35 @@ class Loop:
         except Cancelled:
             return self._end_turn(ev.REASON_ABORTED, {"cause": "user"})
 
+    def _maybe_compact(self) -> None:
+        """Meter-driven compaction (ADR-0006): fold the meter, read the monitor's
+        max_context, and if pressure crosses compact_at, prune first (free) and
+        summarize second (one model call). Never runs mid-pair: it sits at the
+        step boundary, where the surface is balanced."""
+        if self.metrics_fn is None:
+            return
+        from .compaction import prune_tool_results, summarize_oldest
+        from .meter import context_pressure, fold_meter
+        estimate = fold_meter(self.session.snapshot())["prompt_estimate"]
+        try:
+            pressure = context_pressure(self.metrics_fn(), estimate)
+        except Exception:                                   # noqa: BLE001 - monitor read is best-effort
+            return
+        if pressure < self.compact_at:
+            return
+        self.session.append(ev.CONTEXT_PRESSURE, {"estimate": estimate, "pressure": round(pressure, 3),
+                                                  "action": "compact"})
+        pruned = prune_tool_results(self.session)
+        after = fold_meter(self.session.snapshot())["prompt_estimate"]
+        if context_pressure(self.metrics_fn(), after) >= self.compact_at or pruned == 0:
+            summarize_oldest(self.session, self.engine)
+
     def _derive_with_request_header(self) -> list[dict]:
         from .session import derive_messages
         messages = derive_messages(self.session)
+        sections = [s for s in (fn() for fn in self.system_sections) if s]
+        if sections:
+            messages.insert(0, {"role": "system", "content": "\n\n".join(sections)})
         self.session.append(ev.REQUEST_HEADER, {
             "model": "strata", "message_count": len(messages),
             "tools": sorted(self.tools),

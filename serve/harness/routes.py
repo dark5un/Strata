@@ -158,7 +158,10 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
                 content = req.get("content")
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("message: {\"content\": \"...\"}")
-                mgr.send(sid, content)
+                target = req.get("target", "auto")
+                if target not in ("auto", "steer"):
+                    raise ValueError("message: target must be auto|steer")
+                mgr.send(sid, content, target=target)
                 handler._json(200, {"ok": True, "queued": bool(mgr.live(sid).busy)})
             elif action == "fork":
                 boundary = req.get("boundary_seq")
@@ -187,6 +190,17 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
                 if mode not in ("ask", "never", "allowlist") or not isinstance(allowlist, list):
                     raise ValueError("policy: mode ask|never|allowlist, allowlist a list of patterns")
                 mgr.set_policy(sid, str(mode), [str(p) for p in allowlist])
+                handler._json(200, {"ok": True})
+            elif action == "mode":
+                plan = req.get("plan")
+                goal = req.get("goal")
+                if plan is None and goal is None:
+                    raise ValueError("mode: {\"plan\": true|false} and/or {\"goal\": {objective, phase, maxRounds}}")
+                if plan is not None and not isinstance(plan, bool):
+                    raise ValueError("mode: plan must be a boolean")
+                if goal is not None and not isinstance(goal, dict):
+                    raise ValueError("mode: goal must be an object")
+                mgr.set_mode(sid, plan=plan, goal=goal)
                 handler._json(200, {"ok": True})
             else:
                 _bad(handler, 404, "not found")

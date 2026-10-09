@@ -63,6 +63,7 @@
 .harness-approval__actions, .harness-question__actions { display: flex; gap: var(--st-s-2); margin-top: var(--st-s-2); align-items: center; flex-wrap: wrap; }
 .harness-question__actions input { flex: 1; min-width: 140px; }
 .harness-question__actions .is-on { background: var(--st-accent-tint); border-color: var(--st-accent); }
+.harness-bar .is-on { background: var(--st-accent-tint); border-color: var(--st-accent); }
 
 .harness-approval { border-color: var(--st-warn); background: var(--st-warn-tint); }
 .harness-approval pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }

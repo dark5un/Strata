@@ -23,10 +23,13 @@ from .approval import ApprovalBroker, ApprovalPolicy, fold_policy
 from .compaction import orphaned_bracket, prune_tool_results
 from .inbox import Inbox
 from .loop import Loop
+from .modes import GOAL_PHASES, fold_goal, fold_plan, goal_rounds_used, goal_section, plan_section
 from .session import SessionHandle, create, fork, open_session, repair_interrupted
 from .spill import SpillStore
 from .tools import default_registry
 from .tools.ask import QuestionBoard
+from .tools.modes import goal_tool, plan_mode_tool
+from .tools.spill import spill_read_tool
 
 
 @dataclass
@@ -51,12 +54,13 @@ class Live:
 
 class HarnessManager:
     def __init__(self, sessions_dir: Path, engine_factory, *, spill_dir: Path | None = None,
-                 workspace_root: Path | None = None) -> None:
+                 workspace_root: Path | None = None, metrics_fn=None) -> None:
         self.dir = sessions_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.engine_factory = engine_factory          # () -> engine callable
         self.spill_dir = spill_dir or (sessions_dir.parent / "spill")
         self.workspace_root = workspace_root
+        self.metrics_fn = metrics_fn                  # Service.metrics(): the monitor JSON (ADR-0002)
         self._live: dict[str, Live] = {}
         self._lock = threading.Lock()
 
@@ -105,10 +109,16 @@ class HarnessManager:
         policy = fold_policy(h.events)
         broker = ApprovalBroker(policy, answerer=channel.answerer)
         tools = {t.name: t for t in default_registry(board=board, root=self.workspace_root)}
+        spill_store = SpillStore(self.spill_dir / session_id)
+        for extra in (spill_read_tool(spill_store), plan_mode_tool(board), goal_tool()):
+            tools[extra.name] = extra
         loop = Loop(engine=self.engine_factory(), tools=tools, session=h,
                     approval=broker.request,
-                    spill=SpillStore(self.spill_dir / session_id),
-                    inbox=Inbox())
+                    spill=spill_store,
+                    inbox=Inbox(),
+                    metrics_fn=self.metrics_fn,
+                    system_sections=[lambda h=h: plan_section(fold_plan(h.snapshot())),
+                                     lambda h=h: goal_section(fold_goal(h.snapshot()))])
         loop._policy = policy                     # type: ignore[attr-defined]  # routes update it
         loop._broker = broker                     # type: ignore[attr-defined]
         loop._board = board                       # type: ignore[attr-defined]
@@ -124,25 +134,52 @@ class HarnessManager:
 
     # ---------------------------------------------------------------- commands
 
-    def send(self, session_id: str, content: str) -> None:
+    def send(self, session_id: str, content: str, *, target: str = "auto") -> None:
         live = self.live(session_id)
         if live.busy:
-            # mid-turn: steer via the inbox instead of a second turn (dsh semantics)
+            # mid-turn: steer via the inbox instead of a second turn (dsh semantics).
+            # target=steer interrupts at the next step; the default follows up next turn.
+            preset = "steer" if target == "steer" else "followup"
             if live.loop.inbox is not None:
-                live.loop.inbox.send(content, target="next-turn", preset="followup")
+                live.loop.inbox.send(content, target="next-step" if preset == "steer" else "next-turn",
+                                     preset=preset)
             live.publish({"type": "inbox/queued", "seq": -1, "time": None,
-                          "data": {"content": content[:200]}})
+                          "data": {"content": content[:200], "preset": preset}})
             return
         live.busy = True
-        live.worker = threading.Thread(target=self._run_turn, args=(live, content), daemon=True)
+        live.worker = threading.Thread(target=self._drive, args=(live, content), daemon=True)
         live.worker.start()
 
-    def _run_turn(self, live: Live, content: str) -> None:
+    def _drive(self, live: Live, first_content: str) -> None:
+        """Turn driver: run the first turn, then keep the session moving at idle
+        points — queued followups first, then goal rounds while the goal is active.
+        One worker thread per session: this loop is the single writer."""
         h = live.handle
+        content: str | None = first_content
+        source: str | None = None
         try:
-            # context pressure: prune oversized results before deriving (cheap, no model call)
-            prune_tool_results(h)
-            live.loop.send(content)
+            while content is not None:
+                # context pressure: prune oversized results before deriving (cheap, no model call)
+                prune_tool_results(h)
+                if source is None:
+                    live.loop.send(content)
+                else:
+                    h.append(ev.USER_MESSAGE, {"content": content, "source": source})
+                    live.loop.run_turn()
+                content, source = None, None
+                if live.loop.cancel.is_set():
+                    break                       # a cancelled turn stops the driver chain too
+                if live.loop.inbox is not None:
+                    queued = live.loop.inbox.drain("next-turn")
+                    queued = [m for m in queued if m.preset != "inject"]
+                    if queued:
+                        content, source = queued[0].content, queued[0].preset
+                        for extra in queued[1:]:
+                            live.loop.inbox.send(extra.content, "next-turn", extra.preset)
+                        continue
+                content = self._next_goal_round(live)
+                if content is not None:
+                    source = "goal"
         except Exception:  # noqa: BLE001 - supervisor: settle, never kill the server
             try:
                 h.append(ev.TURN_END, {"reason": ev.REASON_ERROR, "message": traceback.format_exc(limit=3)})
@@ -156,6 +193,22 @@ class HarnessManager:
             # list never reads a stale busy=True next to a fresh turn/end
             live.publish({"type": "session/idle", "seq": -1, "time": time.time(),
                           "data": {"session": live.session_id}})
+
+    def _next_goal_round(self, live: Live) -> str | None:
+        """Goal round driver (ADR-0007): one goal-sourced message per idle point
+        while phase=active and the round budget holds. Never revives after a
+        restart: the budget folds from the log, but a fresh attach does not
+        auto-start — only an idle point inside a live driver chain queues rounds."""
+        goal = fold_goal(live.handle.snapshot())
+        if not goal or goal["phase"] != "active":
+            return None
+        if goal_rounds_used(live.handle.snapshot()) >= goal["maxRounds"]:
+            live.handle.append(ev.GOAL_CHANGE, {**goal, "phase": "blocked",
+                                                "why": "maxRounds"})
+            live.handle.flush()
+            return None
+        return (f"Continue working toward the goal: {goal['objective']} "
+                "When it is fully achieved, call the goal tool with phase=complete.")
 
     def cancel(self, session_id: str) -> bool:
         live = self._live.get(session_id)
@@ -182,6 +235,21 @@ class HarnessManager:
         live.handle.append("approval/policy", {"mode": mode, "allowlist": allowlist})
         live.handle.flush()
         live.loop._broker.policy = ApprovalPolicy(mode, allowlist)   # type: ignore[attr-defined]
+
+    def set_mode(self, session_id: str, *, plan: bool | None = None,
+                 goal: dict | None = None) -> None:
+        """User-side mode switches (ADR-0007): durable events only; the loop picks
+        them up at the next derive (system sections) or idle point (goal driver)."""
+        live = self.live(session_id)
+        if plan is not None:
+            live.handle.append(ev.PLAN_MODE, {"active": bool(plan), "by": "user"})
+        if goal is not None:
+            phase = goal.get("phase", "active")
+            live.handle.append(ev.GOAL_CHANGE, {
+                "objective": str(goal.get("objective", "")),
+                "phase": phase if phase in GOAL_PHASES else "active",
+                "maxRounds": int(goal.get("maxRounds", 8)), "by": "user"})
+        live.handle.flush()
 
     # ---------------------------------------------------------------- events
 

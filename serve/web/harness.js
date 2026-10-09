@@ -201,6 +201,14 @@ function paint(row) {
     H.busy = false; setBusy(false);
     if (d.reason !== "completed")
       el("harness-note", `<span class="muted small">turn ${esc(d.reason)}${d.message ? `: ${esc(String(d.message)).slice(0, 200)}` : ""}</span>`);
+  } else if (t === "plan/mode") {
+    setPlanChip(!!d.active);
+    el("harness-note", `<span class="muted small">${icon("layers", "st-icon st-icon--sm")} plan mode ${d.active ? "on" : "off"}</span>`);
+  } else if (t === "goal/change") {
+    setGoalChip(d.phase, d.objective);
+    el("harness-note", `<span class="muted small">${icon("bolt", "st-icon st-icon--sm")} goal ${esc(d.phase)}: ${esc(String(d.objective || "").slice(0, 120))}</span>`);
+  } else if (t === "context/pressure") {
+    el("harness-note", `<span class="muted small">${icon("warning", "st-icon st-icon--sm")} context ${Math.round((d.pressure || 0) * 100)}% — compacting</span>`);
   } else if (t === "session/idle") {
     // synthetic: lands after busy=False on the server — the list's badge is fresh now
     setBusy(false);
@@ -208,7 +216,7 @@ function paint(row) {
   } else if (t === "compaction/summary") {
     el("harness-note", `<span class="muted small">${icon("layers", "st-icon st-icon--sm")} earlier context compacted</span>`);
   } else if (t === "inbox/queued") {
-    el("harness-note", `<span class="muted small">queued for the next turn: ${esc(d.content || "")}</span>`);
+    el("harness-note", `<span class="muted small">${d.preset === "steer" ? "steering this turn: " : "queued for the next turn: "}${esc(d.content || "")}</span>`);
   }
   // unknown event types are skipped on purpose (forward compatibility)
 }
@@ -344,6 +352,37 @@ function composerEnabled(on) {
   $("h-input").placeholder = on ? "Give the agent a task…" : "Start or open a session first";
 }
 
+// plan / goal mode chips + buttons (ADR-0007)
+function setPlanChip(on) {
+  const b = $("h-plan");
+  b.classList.toggle("is-on", on);
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+}
+function setGoalChip(phase, objective) {
+  const b = $("h-goal");
+  const live = phase === "active";
+  b.classList.toggle("is-on", live);
+  b.title = objective ? `goal (${esc(phase)}): ${String(objective).slice(0, 120)}`
+                      : "Goal mode: keep working toward an objective across turns";
+}
+$("h-plan").onclick = async () => {
+  if (!H.sid) return;
+  const on = !$("h-plan").classList.contains("is-on");
+  try { await hpost(`harness/session/${H.sid}/mode`, {plan: on}); }
+  catch (e) { toast("error", "Plan mode", e.message); }
+};
+$("h-goal").onclick = async () => {
+  if (!H.sid) return;
+  const objective = prompt("Goal objective (empty pauses an active goal):");
+  if (objective === null) return;
+  const body = objective.trim()
+    ? {goal: {objective: objective.trim(), phase: "active", maxRounds: 8}}
+    : {goal: {objective: "", phase: "paused"}};
+  try { await hpost(`harness/session/${H.sid}/mode`, body); }
+  catch (e) { toast("error", "Goal mode", e.message); }
+};
+
+// composer: idle -> new turn; busy -> steer the running turn (dsh semantics)
 $("h-composer").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("h-input").value.trim();
@@ -351,7 +390,8 @@ $("h-composer").onsubmit = async (e) => {
   if (!H.sid) { toast("info", "No session", "Start one with the + button."); return; }
   $("h-input").value = "";
   try {
-    await hpost(`harness/session/${H.sid}/message`, {content: text});
+    const body = {content: text, target: H.busy ? "steer" : "auto"};
+    await hpost(`harness/session/${H.sid}/message`, body);
   } catch (err) { toast("error", "Send", err.message); }
 };
 // parity with the Chat composer: Enter sends, Shift+Enter is a new line

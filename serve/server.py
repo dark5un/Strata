@@ -5513,7 +5513,8 @@ def main() -> int:
                                            Path.home() / ".local/share/strata/harness")) / "sessions"
         svc.harness = HarnessManager(sessions_dir,
                                      lambda: make_service_engine(svc, sampling=dict(svc.sampling_defaults)),
-                                     workspace_root=Path(os.environ.get("STRATA_HARNESS_WORKSPACE", os.getcwd())))
+                                     workspace_root=Path(os.environ.get("STRATA_HARNESS_WORKSPACE", os.getcwd())),
+                                     metrics_fn=lambda: svc.metrics())
         print(f"[strata] harness on (/harness): agent sessions in {sessions_dir}; tools run on this PC behind "
               "approvals" + ("" if svc.api_key else "; no API key — anyone who can reach this page drives the agent"),
               flush=True)
