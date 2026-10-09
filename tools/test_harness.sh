@@ -11,4 +11,8 @@ echo "== ruff"
 ruff check serve/harness/
 echo "== pyright"
 pyright serve/harness/
+if [ -f eslint.config.mjs ] && command -v npx >/dev/null 2>&1; then
+  echo "== eslint (harness tab)"
+  npx --no-install eslint serve/web/harness.js || npx eslint serve/web/harness.js
+fi
 echo "ALL GATES GREEN"
