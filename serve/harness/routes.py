@@ -158,8 +158,13 @@ def handle_get(handler, svc, path: str) -> None:
         pending += [{"type": "question/ask", "seq": -1, "time": None,
                      "data": {"qid": q.qid, "question": q.question, "options": q.options, "multi": q.multi}}
                     for q in live.board.pending()]
+        # the pill's source of truth (meter fold, same number compaction uses)
+        from .meter import context_pressure, fold_meter
+        est = fold_meter(rows)["prompt_estimate"]
+        ctx = {"estimate": est, "pressure": round(context_pressure(mgr.metrics_fn(), est), 3)} \
+            if mgr.metrics_fn is not None else None
         handler._json(200, {"events": rows, "pending": pending, "last_seq": live.handle.last_seq,
-                            "busy": live.busy, "policy": policy_json})
+                            "busy": live.busy, "policy": policy_json, "context": ctx})
         return
     if rest == "stream":
         _stream(handler, mgr, (query.get("session") or [""])[0])

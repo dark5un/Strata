@@ -146,6 +146,24 @@ class ManagerTests(unittest.TestCase):
             streamed.append(q.get())
         self.assertTrue(any(r["type"] == ev.USER_MESSAGE and r["data"]["content"] == "two" for r in streamed))
 
+    def test_subscribe_appends_a_meter_fold_row(self):
+        # ctx-pill 0% bug: after a reload the pill must be right immediately —
+        # subscribe folds the meter and sends the synthetic context delta last
+        mgr = HarnessManager(self.root / "sessions", scripted([]),
+                             spill_dir=self.root / "spill", workspace_root=self.root,
+                             metrics_fn=lambda: {"engine": {"max_context": 1000}})
+        sid = mgr.new()
+        mgr.send(sid, "a question with some words in it")
+        wait_idle(mgr, sid)
+        q = mgr.subscribe(sid)
+        rows = []
+        while not q.empty():
+            rows.append(q.get())
+        ctx = [r for r in rows if r["type"] == "stream/delta" and r["data"].get("kind") == "context"]
+        self.assertEqual(len(ctx), 1)
+        self.assertGreater(ctx[0]["data"]["estimate"], 0)
+        self.assertIs(rows[-1], ctx[0])                        # after the replayed log
+
     def test_busy_send_becomes_inbox_followup(self):
         gate = threading.Event()
 

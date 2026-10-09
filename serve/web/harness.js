@@ -18,6 +18,7 @@ const H = {
   buffer: [],            // frames that land mid-reconcile (painted after the rebuild)
   seenAsks: new Set(),   // synthetic ask rows already painted (dedup on reconnect)
   retryDelay: 1000,
+  ctxEstimate: 0,        // the meter's fold (stream/delta kind=context): the pill's source of truth
 };
 
 const MAX_RENDERED = 400;   // DOM cap: a long session prunes its oldest rows
@@ -425,6 +426,7 @@ function openSession(sid) {
   H.buffer = [];
   H.retryDelay = 1000;
   H.plan = false; H.goal = null;
+  H.ctxEstimate = 0;                       // the pill re-arms from the meter fold on subscribe
   setPlanChip(false); setGoalChip(null, "");   // no stale chips between sessions
   setBusy(false);
   $("h-policy").value = "ask"; $("h-allowlist").hidden = true; setYoloBanner(false);
@@ -448,6 +450,7 @@ function startStream() {
       provClear();
       H.lastSeq = -1;
       H.seenAsks = new Set();
+      H.ctxEstimate = 0;                   // the subscribe-time meter fold re-arms the pill
       H.plan = false; H.goal = null;
       setPlanChip(false); setGoalChip(null, "");
       for (;;) {
@@ -490,12 +493,13 @@ async function reconcile() {
   if (H.reconciling || !H.sid) return;
   H.reconciling = true;
   try {
-    const {events, pending, busy, policy} = await hget(`harness/events?session=${encodeURIComponent(H.sid)}`);
+    const {events, pending, busy, policy, context} = await hget(`harness/events?session=${encodeURIComponent(H.sid)}`);
     const buffered = H.buffer; H.buffer = [];
     $("h-transcript").innerHTML = "";
     provClear();
     H.lastSeq = -1;
     H.seenAsks = new Set();
+    if (context) H.ctxEstimate = context.estimate;   // the meter fold: the pill's source of truth
     for (const row of events) paint(row);
     for (const row of pending) paint(row);            // unanswered asks: redraw their cards
     for (const row of buffered) paint(row);
@@ -591,6 +595,7 @@ function paint(row) {
       if (PROV.think) { const det = PROV.think.querySelector("details"); if (det) det.open = false; }
       provBubble().textContent += d.text || "";
     }
+    else if (d.kind === "context") { H.ctxEstimate = d.estimate; renderCtxPill(d.estimate); }  // the meter's fold: the pill's source of truth
     const stick = nearBottom();
     if (stick) scrollDown(true);
     return;
@@ -768,7 +773,12 @@ function fillToolCard(d) {
   stateBadge.className = "st-badge " + (d.is_error ? "st-badge--error" : "st-badge--reading");
   stateBadge.textContent = d.is_error ? "error" : "done";
   stateBadge.title = resultKind(d.text);   // D4: the collapsed row carries the size in the badge tooltip
-  if (d.is_error) details.open = true;
+  // the fold rule (user, 2026-10-09): a settled tool call folds to its quiet
+  // one-line row — history must not compete with the live step (same rule as
+  // decided approvals). It stays open only on error: the failure IS the live
+  // thing to read. (Was: open forever, only re-opened on error — the card
+  // never folded when done.)
+  details.open = !!d.is_error;
 }
 
 function setBusy(busy) {
@@ -799,9 +809,8 @@ function setBusy(busy) {
     $("h-input").placeholder = busy ? "working — Enter steers this turn" : "Give the agent a task…";
 }
 
-function showUsage(u) {
+function renderCtxPill(used) {
   const max = (lastMetrics && lastMetrics.engine && lastMetrics.engine.max_context) || 0;
-  const used = u.prompt_tokens || 0;                  // what the last request actually held
   const pct = max ? Math.round((used / max) * 100) : 0;
   const warn = max && pct > 85;
   $("h-ctx").innerHTML = max
@@ -811,6 +820,14 @@ function showUsage(u) {
   // harness runs beside a different model (HTTP-attached), say which it is
   $("h-ctx").title = max ? `of this server's engine context window (${fmt(max)} tokens)` : "";
   $("h-ctx").classList.toggle("harness-ctx--warn", warn);
+}
+
+function showUsage(u) {
+  // single source of truth (2026-10-09 ctx-pill 0% bug): the meter's fold —
+  // the same number that drives compaction — wins over the last request's
+  // raw prompt_tokens (which only covers one turn and was 0 on the in-process
+  // path). The request count is the fallback when no fold has landed yet.
+  renderCtxPill(H.ctxEstimate || (u && u.prompt_tokens) || 0);
 }
 
 // ------------------------------------------------------------------ approvals + questions

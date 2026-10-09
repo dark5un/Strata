@@ -285,6 +285,22 @@ class SessionCommandTests(RoutesBase):
         self.assertEqual(ev["pending"][0]["data"]["call_id"], "c1")
         self.mgr.decide(sid, "c1", "deny")            # settle the worker for teardown
 
+    def test_events_carry_the_meter_fold(self):
+        # ctx-pill 0% bug: /harness/events carries the meter's fold so a
+        # reconnecting tab paints a plausible context pill at once
+        import time
+        self.mgr.metrics_fn = lambda: {"engine": {"max_context": 1000}}
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        self.post(f"/harness/session/{sid}/message", {"content": "a task with words"})
+        for _ in range(200):
+            if not self.mgr.live(sid).busy:
+                break
+            time.sleep(0.02)
+        _, ev = self.get(f"/harness/events?session={sid}")
+        self.assertIsNotNone(ev["context"])
+        self.assertGreater(ev["context"]["estimate"], 0)
+
 
 
 class PluginRouteTests(RoutesBase):

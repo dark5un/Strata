@@ -387,6 +387,21 @@ class LoopTests(unittest.TestCase):
         lp.send("go")
         self.assertTrue(ran["v"])                      # observers fail open; the gate stays the human's
 
+    def test_meter_fold_publishes_a_context_delta_per_step(self):
+        # ctx-pill 0% bug (2026-10-09): the pill reads the meter's fold (the
+        # same number compaction uses), published at every step boundary as a
+        # process-local stream delta — never a durable row.
+        deltas = []
+        lp, h = self._loop([{"content": "hi", "tool_calls": [], "usage": {}}],
+                           metrics_fn=lambda: {"engine": {"max_context": 1000}},
+                           on_stream=lambda d: deltas.append(d))
+        lp.send("hello there")
+        ctx = [d for d in deltas if d["kind"] == "context"]
+        self.assertEqual(len(ctx), 1)                          # one step boundary
+        self.assertGreater(ctx[0]["estimate"], 0)              # not the old 0
+        self.assertLessEqual(ctx[0]["pressure"], 1.0)
+        self.assertNotIn(ev.CONTEXT_PRESSURE, [r["type"] for r in h.events])  # below compact_at: no durable row
+
 
 if __name__ == "__main__":
     unittest.main()

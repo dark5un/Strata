@@ -511,8 +511,18 @@ class HarnessManager:
         q: queue.Queue[dict] = queue.Queue()
         with live.sub_lock:
             live.subs.append(q)
-        for row in live.handle.snapshot():
+        rows = live.handle.snapshot()
+        for row in rows:
             q.put(row)
+        # the pill's source of truth survives a reload: fold the meter once at
+        # subscribe time (the same fold that drives compaction) and send it as
+        # the synthetic context delta the live loop publishes per step
+        if self.metrics_fn is not None:
+            from .meter import context_pressure, fold_meter
+            est = fold_meter(rows)["prompt_estimate"]
+            q.put({"type": "stream/delta", "seq": -1, "time": time.time(),
+                   "data": {"kind": "context", "estimate": est,
+                            "pressure": round(context_pressure(self.metrics_fn(), est), 3)}})
         return q
 
     def unsubscribe(self, session_id: str, q: queue.Queue) -> None:

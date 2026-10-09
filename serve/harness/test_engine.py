@@ -39,15 +39,26 @@ class ServiceEngineTests(unittest.TestCase):
         svc = FakeService([
             ("event", Event("content", text="Hel")),
             ("event", Event("content", text="lo")),
-            ("final", {"finish": "stop", "prompt_tokens": 10, "completion_tokens": 2, "reused": 4}),
+            ("done", {"finish": "stop", "completion_tokens": 2, "reused": 4}),
         ])
         eng = make_service_engine(svc)
         r = eng([{"role": "user", "content": "hi"}], None)
         self.assertIsInstance(r, EngineResult)
         self.assertEqual(r.content, "Hello")
-        self.assertEqual(r.usage["prompt_tokens"], 10)
+        # the real ("done", ...) payload carries NO prompt_tokens (server.py:3762):
+        # the adapter falls back to len(ids) from prepare(), like the /v1 route
+        # (server.py:3996). FakeService.prepare returns one id per message.
+        self.assertEqual(r.usage["prompt_tokens"], 1)
         self.assertEqual(r.usage["cached_tokens"], 4)
         self.assertEqual(r.finish, "stop")
+
+    def test_done_prompt_tokens_wins_when_present(self):
+        # forward-compat: if a future engine adds the field to ("done", ...),
+        # the adapter must use it instead of the len(ids) fallback
+        svc = FakeService([("done", {"finish": "stop", "prompt_tokens": 10,
+                                     "completion_tokens": 2, "reused": 4})])
+        r = make_service_engine(svc)([{"role": "user", "content": "hi"}], None)
+        self.assertEqual(r.usage["prompt_tokens"], 10)
 
     def test_tool_calls_assembled(self):
         call = ToolCall(name="shell", arguments={"command": "ls"}, id="c1")
@@ -56,7 +67,7 @@ class ServiceEngineTests(unittest.TestCase):
             ("event", Event("tool_args", call=call, text='{"comm')),
             ("event", Event("tool_args", call=call, text='and": "ls"}')),
             ("event", Event("tool_call", call=call)),
-            ("final", {"finish": "stop", "prompt_tokens": 5, "completion_tokens": 3}),
+            ("done", {"finish": "stop", "completion_tokens": 3}),
         ])
         r = make_service_engine(svc)([{"role": "user", "content": "list"}], [{"name": "shell"}])
         self.assertEqual(r.tool_calls, [{"id": "c1", "name": "shell", "arguments": {"command": "ls"}}])
@@ -66,7 +77,7 @@ class ServiceEngineTests(unittest.TestCase):
         svc = FakeService([
             ("event", Event("tool_start", call=call)),
             ("event", Event("tool_args", call=call, text='{"command": "trunc')),
-            ("final", {"finish": "length", "prompt_tokens": 5, "completion_tokens": 9}),
+            ("done", {"finish": "length", "completion_tokens": 9}),
         ])
         r = make_service_engine(svc)([{"role": "user", "content": "x"}], None)
         self.assertEqual(len(r.tool_calls), 1)
@@ -79,7 +90,7 @@ class ServiceEngineTests(unittest.TestCase):
             ("event", Event("reasoning", text="think ")),
             ("event", Event("reasoning", text="hard")),
             ("event", Event("content", text="answer")),
-            ("final", {"finish": "stop", "prompt_tokens": 1, "completion_tokens": 2}),
+            ("done", {"finish": "stop", "completion_tokens": 2}),
         ])
         r = make_service_engine(svc)([{"role": "user", "content": "q"}], None,
                                      on_event=lambda e: seen.append(e["kind"]))
@@ -91,7 +102,7 @@ class ServiceEngineTests(unittest.TestCase):
         svc = FakeService([
             ("ping", None),
             ("event", Event("content", text="ok")),
-            ("final", {"finish": "stop", "prompt_tokens": 1, "completion_tokens": 1}),
+            ("done", {"finish": "stop", "completion_tokens": 1}),
         ])
         self.assertEqual(make_service_engine(svc)([{"role": "user", "content": "x"}], None).content, "ok")
 

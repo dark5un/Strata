@@ -9,11 +9,15 @@ Service.run yields (kind, payload):
   ("mcp", {...})                    serve/mcp.py progress (not used here: the harness owns its tools)
   ("event", Event)                  frontend OutputParser events: reasoning | content |
                                     tool_start | tool_args | tool_call
-  ("final", {...})                  finish + usage: prompt_tokens, completion_tokens, reused, timings
+  ("done", {...})                   finish + usage: completion_tokens, reused, timings
+                                    (prompt_tokens NOT included — the /v1 route
+                                    derives it from the prepared ids; we do the same)
 
 The engine is a plain callable for the loop: engine(messages, tools, on_event) -> EngineResult.
 on_event receives harness-level stream events (process-local, never logged):
-  {"kind": "reasoning"|"content", "text": str} and {"kind": "tool_call", "call": {...}}.
+  {"kind": "reasoning"|"content", "text": str}, {"kind": "tool_call", "call": {...}}
+  and {"kind": "context", "estimate": int, "pressure": float} (the meter's
+  fold at each step boundary — the context pill's single source of truth).
 """
 from __future__ import annotations
 
@@ -82,10 +86,15 @@ def make_service_engine(svc, sampling: dict | None = None, cancel_poll: Callable
                     pending.pop(x.call.id, None)
                     result.tool_calls.append(call)
                     on_event({"kind": "tool_call", "call": call})
-            elif kind == "final":
+            elif kind == "done":
+                # the real Service.run contract (server.py:3762): ("done", {...})
+                # — NOT "final", and the payload carries no prompt_tokens: the
+                # /v1 route derives it from the prepared ids (server.py:3996).
+                # The ctx-pill 0% bug (2026-10-09): matching "final" left every
+                # usage row empty and the meter silently on char/4 estimates.
                 result.finish = x.get("finish", "stop")
                 result.usage = {
-                    "prompt_tokens": x.get("prompt_tokens", 0),
+                    "prompt_tokens": x.get("prompt_tokens", len(ids)),
                     "completion_tokens": x.get("completion_tokens", 0),
                     "cached_tokens": x.get("reused") or 0,
                     "timings": x.get("timings") or {},

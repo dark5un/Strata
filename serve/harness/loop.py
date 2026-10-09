@@ -217,7 +217,13 @@ class Loop:
         """Meter-driven compaction (ADR-0006): fold the meter, read the monitor's
         max_context, and if pressure crosses compact_at, prune first (free) and
         summarize second (one model call). Never runs mid-pair: it sits at the
-        step boundary, where the surface is balanced."""
+        step boundary, where the surface is balanced.
+
+        The fold also feeds the tab's context pill (2026-10-09 bug: the pill
+        read 0% mid-session): the meter is the single source of truth for
+        context fill, so its estimate rides the process-local stream sink as a
+        synthetic "context" delta at every step boundary — the pill shows the
+        same number that drives compaction, not a stale per-request count."""
         if self.metrics_fn is None:
             return
         from .compaction import prune_tool_results, summarize_oldest
@@ -227,6 +233,8 @@ class Loop:
             pressure = context_pressure(self.metrics_fn(), estimate)
         except Exception:                                   # noqa: BLE001 - monitor read is best-effort
             return
+        if self.on_stream is not None:
+            self.on_stream({"kind": "context", "estimate": estimate, "pressure": round(pressure, 3)})
         if pressure < self.compact_at:
             return
         self.session.append(ev.CONTEXT_PRESSURE, {"estimate": estimate, "pressure": round(pressure, 3),
