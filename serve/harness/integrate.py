@@ -18,7 +18,11 @@ def attach(svc, a, cfg: dict, hub=None) -> None:
     make_service_engine (ADR-0002/0003): never HTTP to itself. `hub` is the
     same McpHub the Chat tab uses — one set of MCP processes per server
     (ADR-0012); None when no MCP servers are configured."""
-    if not (getattr(a, "harness", False) or cfg.get("harness") is True):
+    if not (getattr(a, "harness", False) or cfg.get("harness") is True
+            or os.environ.get("STRATA_HARNESS") == "1"):
+        # STRATA_HARNESS=1 is the container/quadlet opt-in: the engine config is
+        # written by setup.py and the flag is a CLI arg; the env var keeps the
+        # deployment decision in the unit file, not in either.
         return
     from .engine import make_service_engine
     from .manager import HarnessManager
