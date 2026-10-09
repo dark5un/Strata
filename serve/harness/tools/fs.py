@@ -27,10 +27,13 @@ def _resolve(path: str, root: Path | None) -> Path:
     return p
 
 
-def read_tool() -> ToolDefinition:
+def read_tool(root: str | Path | None = None) -> ToolDefinition:
     def execute(args: dict, ctx) -> dict:
         try:
-            path = Path(str(args["path"])).expanduser().resolve()
+            p = Path(str(args["path"])).expanduser()
+            if not p.is_absolute():
+                p = (Path(root).resolve() if root else Path.cwd()) / p
+            path = p.resolve()
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             return {"text": f"read failed: {exc}", "is_error": True}

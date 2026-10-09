@@ -49,19 +49,20 @@ class ApprovalBroker:
         self.answerer = answerer
         self.timeout_s = timeout_s
 
-    def request(self, req) -> str:
+    def request(self, req) -> tuple[str, bool]:
+        """-> (outcome, asked). asked=False when the policy decided without a human."""
         decision = self.policy.decide(req.tool, req.args_preview)
         if decision == "allow-once":
-            return "allow-once"
+            return "allow-once", False
         if decision == "deny":
-            return "deny"
+            return "deny", False
         if self.answerer is None:
-            return "unavailable"
+            return "unavailable", True
         try:
             outcome = self.answerer(req)
         except Exception:  # noqa: BLE001
-            return "unavailable"
-        return outcome if outcome in OUTCOMES else "unavailable"
+            return "unavailable", True
+        return (outcome if outcome in OUTCOMES else "unavailable"), True
 
 
 def fold_policy(rows: list[dict]) -> ApprovalPolicy:

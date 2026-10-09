@@ -28,14 +28,14 @@ class ApprovalTests(unittest.TestCase):
     def test_broker_fail_closed(self):
         class Req:
             tool, args_preview = "shell", "rm"
-        self.assertEqual(ApprovalBroker(ApprovalPolicy("ask")).request(Req()), "unavailable")
-        self.assertEqual(ApprovalBroker(ApprovalPolicy("never")).request(Req()), "deny")
+        self.assertEqual(ApprovalBroker(ApprovalPolicy("ask")).request(Req()), ("unavailable", True))
+        self.assertEqual(ApprovalBroker(ApprovalPolicy("never")).request(Req()), ("deny", False))
 
     def test_broker_outcome_validation(self):
         class Req:
             tool, args_preview = "shell", "ls"
         broker = ApprovalBroker(ApprovalPolicy("ask"), answerer=lambda r: "yes-please")
-        self.assertEqual(broker.request(Req()), "unavailable")
+        self.assertEqual(broker.request(Req()), ("unavailable", True))
 
     def test_fold_policy_from_log(self):
         h = create(Path(tempfile.mkdtemp()))

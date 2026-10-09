@@ -77,9 +77,9 @@ class Loop:
     engine: Callable
     tools: dict[str, ToolDefinition]
     session: SessionHandle
-    # approval: (ApprovalRequest) -> "allow-once" | "deny" | "cancelled" | "unavailable"; fail-closed.
+    # approval: (ApprovalRequest) -> str outcome, or (outcome, asked) tuple; fail-closed.
     # None means deny-by-default: an unconfigured harness never runs gated tools.
-    approval: Callable[[ApprovalRequest], str] | None = None
+    approval: Callable[[ApprovalRequest], str | tuple[str, bool]] | None = None
     # pre_step: (loop, inbox) -> optional extra user messages to inject before the step.
     pre_step: list[Callable] = field(default_factory=list)
     max_steps_per_turn: int = 64
@@ -184,17 +184,24 @@ class Loop:
 
     def _ask_approval(self, call_id: str, tool: ToolDefinition, args: dict) -> str:
         req = ApprovalRequest(call_id=call_id, tool=tool.name, args_preview=_preview(args))
-        self.session.append(ev.APPROVAL_ASKED, {"call_id": call_id, "tool": tool.name, "preview": req.args_preview})
         if self.approval is None:
-            outcome = "unavailable"                  # fail closed: no answerer configured
+            outcome, asked = "unavailable", True          # fail closed: no answerer configured
         else:
             try:
-                outcome = self.approval(req)
-            except Exception:                        # noqa: BLE001 - fail closed
-                outcome = "unavailable"
+                ret = self.approval(req)
+            except Exception:                            # noqa: BLE001 - fail closed
+                ret = ("unavailable", True)
+            if isinstance(ret, tuple):
+                outcome, asked = ret
+            else:
+                outcome, asked = ret, True               # plain-outcome callbacks always count as an ask
             if outcome not in ("allow-once", "deny", "cancelled", "unavailable"):
                 outcome = "unavailable"
-        self.session.append(ev.APPROVAL_DECIDED, {"call_id": call_id, "outcome": outcome})
+        if asked:
+            self.session.append(ev.APPROVAL_ASKED, {"call_id": call_id, "tool": tool.name,
+                                                    "preview": req.args_preview})
+        self.session.append(ev.APPROVAL_DECIDED, {"call_id": call_id, "outcome": outcome,
+                                                  "asked": asked})
         return outcome
 
     def _run_tool(self, tool: ToolDefinition, call_id: str, args: dict, concluded: dict) -> bool:

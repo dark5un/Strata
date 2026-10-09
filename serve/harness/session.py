@@ -75,6 +75,11 @@ class SessionHandle:
         with self._lock:
             return self._next_seq - 1
 
+    def snapshot(self, since: int = 0) -> list[dict]:
+        """A lock-consistent copy of events with seq >= since (for readers/publishers)."""
+        with self._lock:
+            return [r for r in self.events if r["seq"] >= since]
+
 
 def new_session_id() -> str:
     return uuid.uuid4().hex[:12]

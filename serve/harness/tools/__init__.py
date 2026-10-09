@@ -51,7 +51,7 @@ def default_registry(board=None, **opts) -> ToolRegistry:
     reg = ToolRegistry()
     root = opts.get("root")
     entries: list[tuple[ToolDefinition, bool]] = [
-        (_fs.read_tool(), False),
+        (_fs.read_tool(root), False),
         (_search.search_tool(root), False),
         (_todo.todo_tool(), False),
         (_fs.write_tool(root), True),
