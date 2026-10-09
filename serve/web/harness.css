@@ -1,0 +1,73 @@
+/* serve/web/harness.css — the Harness tab's layout (strata-harness).
+   Design-system tokens only (tokens.css); primitives come from components.css.
+   This file only arranges them: no new colors, radii or spacing scales. */
+
+.harness-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: var(--st-s-3);
+  align-items: start;
+  height: calc(100vh - 56px - var(--st-s-8));
+}
+.harness-sessions { overflow-y: auto; max-height: 100%; }
+.harness-session {
+  display: flex;
+  align-items: center;
+  gap: var(--st-s-2);
+  width: 100%;
+  padding: var(--st-s-2);
+  border: 0;
+  border-radius: var(--st-r-md);
+  background: transparent;
+  color: var(--st-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.harness-session:hover { background: var(--st-surface-2); }
+.harness-session.is-active { background: var(--st-accent-tint); }
+.harness-session .st-icon { flex: none; color: var(--st-ink-soft); }
+.harness-session span:first-of-type { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.harness-main { display: flex; flex-direction: column; gap: var(--st-s-2); min-width: 0; height: 100%; }
+.harness-bar { display: flex; align-items: center; gap: var(--st-s-2); }
+.harness-bar select.st-input { width: auto; padding: var(--st-s-1) var(--st-s-2); }
+.harness-ctx--warn { color: var(--st-warn-text); }
+
+.harness-transcript {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--st-s-3);
+  padding: var(--st-s-1) 2px;
+}
+
+.harness-tool, .harness-approval, .harness-question, .harness-note {
+  border: 1px solid var(--st-line);
+  border-radius: var(--st-r-md);
+  padding: var(--st-s-2) var(--st-s-3);
+  background: var(--st-surface);
+  box-shadow: var(--st-sh-card);
+}
+.harness-tool__head, .harness-approval__head, .harness-question__head {
+  display: flex;
+  align-items: center;
+  gap: var(--st-s-2);
+}
+.harness-tool__head .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-tool__head.is-done .card-title::after { content: " \2713"; color: var(--st-info-text); }
+.harness-tool__head.is-error .card-title::after { content: " \2717"; color: var(--st-danger-text); }
+.harness-tool__body { margin-top: var(--st-s-2); }
+.harness-tool__body pre { max-height: 320px; overflow: auto; white-space: pre-wrap; }
+.harness-tool__error { color: var(--st-danger-text); }
+
+.harness-approval { border-color: var(--st-warn); background: var(--st-warn-tint); }
+.harness-approval__actions, .harness-question__actions { display: flex; gap: var(--st-s-2); margin-top: var(--st-s-2); align-items: center; }
+.harness-question__actions input { flex: 1; }
+
+@media (max-width: 720px) {
+  .harness-layout { grid-template-columns: 1fr; height: auto; }
+  .harness-sessions { max-height: 160px; }
+  .harness-transcript { min-height: 50vh; }
+}

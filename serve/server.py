@@ -2397,6 +2397,7 @@ class Service:
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
+        self.harness: object = None                    # strata-harness: the HarnessManager when --harness (serve/harness)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
@@ -4212,6 +4213,12 @@ def make_handler(svc: Service):
 
         def do_GET(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/harness" or path.startswith("/harness/"):
+                # strata-harness: the agent tab's routes (serve/harness/routes.py);
+                # gated like the API (key when set) and same-origin like the page
+                from serve.harness import routes
+                routes.handle_get(self, svc, path)
+                return
             if path.startswith("/fonts/"):
                 # the web app's font (Outfit, OFL: serve/web/fonts); the page falls back to the system font
                 name = path[len("/fonts/"):]
@@ -4394,6 +4401,11 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                if path == "/harness" or path.startswith("/harness/"):
+                    # strata-harness: commands for the agent tab (serve/harness/routes.py)
+                    from serve.harness import routes
+                    routes.handle_post(self, svc, path, req)
+                    return
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
                     self._json(404, responses_error_body("this server keeps no responses (stateless); send the "
                                                          "whole conversation to POST /v1/responses", code="not_found"))
@@ -5354,6 +5366,10 @@ def main() -> int:
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
                          "memory (also \"api_monitor\": true in the config; off by default)")
+    ap.add_argument("--harness", action="store_true",
+                    help="strata-harness: the agent tab at /harness (serve/harness): sessions in "
+                         "~/.local/share/strata/harness, tools run on this PC behind approvals "
+                         "(also \"harness\": true in the config; off by default)")
     ap.add_argument("--idle-unload", type=float, default=None, metavar="SECONDS",
                     help="unload the model after this many seconds without requests, so other programs (games, other "
                          "model servers) can use the VRAM; the next request loads it again (also \"idle_unload_s\" "
@@ -5487,6 +5503,19 @@ def main() -> int:
     if svc.api_monitor:
         print("[strata] API request monitor on (/api-monitor): the last 100 requests' prompts and answers are kept in "
               "memory" + ("" if svc.api_key else "; anyone who can reach this server can read them (no API key)"),
+              flush=True)
+    if a.harness or cfg.get("harness") is True:
+        # strata-harness: the agent runtime lives beside the Service (ADR-0002/0003):
+        # it calls prepare()/run() in-process, never HTTP to itself.
+        from serve.harness.engine import make_service_engine
+        from serve.harness.manager import HarnessManager
+        sessions_dir = Path(os.environ.get("STRATA_HARNESS_DIR",
+                                           Path.home() / ".local/share/strata/harness")) / "sessions"
+        svc.harness = HarnessManager(sessions_dir,
+                                     lambda: make_service_engine(svc, sampling=dict(svc.sampling_defaults)),
+                                     workspace_root=Path(os.environ.get("STRATA_HARNESS_WORKSPACE", os.getcwd())))
+        print(f"[strata] harness on (/harness): agent sessions in {sessions_dir}; tools run on this PC behind "
+              "approvals" + ("" if svc.api_key else "; no API key — anyone who can reach this page drives the agent"),
               flush=True)
     if svc.cors_origins:
         print(f"[strata] CORS on /v1/* for {', '.join(svc.cors_origins)}"
