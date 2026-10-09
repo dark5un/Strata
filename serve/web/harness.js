@@ -483,11 +483,20 @@ function approvalCard(d) {
 function markDecided(callId, outcome) {
   const card = [...document.querySelectorAll(".harness-approval")].find((c) => c.dataset.callId === callId);
   if (!card) return;
-  card.querySelectorAll("[data-a]").forEach((x) => { x.disabled = true; });
-  const s = document.createElement("span");
-  s.className = "muted small";
-  s.textContent = ` ${outcome}`;
-  card.querySelector(".harness-approval__head").appendChild(s);
+  // the decision is made: fold the card to one quiet line (M6 UX: a decided
+  // approval must not compete with the live step; the preview stays available)
+  const preview = card.querySelector("pre")?.textContent || "";
+  const head = card.querySelector(".harness-approval__head");
+  const title = head.querySelector(".card-title")?.textContent || "";
+  card.dataset.decided = outcome;
+  card.innerHTML =
+    `<details class="harness-approval__fold">` +
+    `<summary>${icon(outcome === "deny" ? "error" : "check", "st-icon st-icon--sm")}` +
+    `<span class="tool-call__name">${esc(title.trim())}</span>` +
+    `<span class="tool-call__preview muted">${esc(preview.split("\n")[0].slice(0, 90))}</span>` +
+    `<span class="st-badge ${outcome === "deny" ? "st-badge--error" : "st-badge--reading"}">${esc(outcome)}</span>` +
+    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+    `<div class="st-collapse__body"><pre class="tool-call__pre">${esc(preview)}</pre></div></details>`;
 }
 
 function questionCard(d) {

@@ -71,3 +71,6 @@ build-vision-cuda12.bat
 # /prowl-agent: derived state
 
 .prowl/
+
+# harness agent scratch output (live trials)
+scratch/

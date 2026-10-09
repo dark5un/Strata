@@ -101,6 +101,13 @@
 
 .harness-approval { border-color: var(--st-warn); background: var(--st-warn-tint); }
 .harness-approval pre { max-height: 200px; overflow: auto; white-space: pre-wrap; }
+/* decided approvals fold to one quiet line (M6 UX): same shape as a tool
+   card, no amber surface anymore — the decision is history, not a prompt */
+.harness-approval[data-decided] { border-color: var(--st-line); background: var(--st-surface); padding: 0; }
+.harness-approval__fold > summary { display: flex; align-items: center; gap: var(--st-s-2);
+  min-width: 0; padding: var(--st-s-2) var(--st-s-3); cursor: pointer; list-style: none; }
+.harness-approval__fold > summary::-webkit-details-marker { display: none; }
+.harness-approval__fold .st-collapse__body { padding: 0 var(--st-s-3) var(--st-s-2); }
 
 /* subagent settlement card (M4): distinct from a user bubble, same primitives */
 .harness-subagent {
