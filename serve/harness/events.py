@@ -50,6 +50,14 @@ GOAL_CHANGE = "goal/change"
 # meter-driven compaction notice (ADR-0006): why the loop compacted right now
 CONTEXT_PRESSURE = "context/pressure"
 
+# subagents (ADR-0008): durable spawn record in the PARENT log — the child
+# budget folds from these, so it survives restarts. Settlement rides the
+# user/message source vocabulary ("subagent"), not a new message type.
+SUBAGENT_SPAWN = "subagent/spawn"
+
+# preset load failed closed (ADR-0009): unknown/malformed preset -> default + note
+PRESET_WARNING = "preset/warning"
+
 # turn/end reasons (durable taxonomy; crash repair appends closers, never truncates)
 REASON_COMPLETED = "completed"
 REASON_ABORTED = "aborted"
@@ -80,5 +88,5 @@ _KNOWN = frozenset({
     TURN_START, TURN_END, STEP_START, STEP_END, USER_MESSAGE, ASSISTANT_MESSAGE,
     TOOL_CALL, TOOL_RESULT, REQUEST_HEADER, APPROVAL_ASKED, APPROVAL_DECIDED,
     COMPACTION_START, COMPACTION_SUMMARY, COMPACTION_END, SESSION_END_SEED,
-    PLAN_MODE, GOAL_CHANGE, CONTEXT_PRESSURE,
+    PLAN_MODE, GOAL_CHANGE, CONTEXT_PRESSURE, SUBAGENT_SPAWN, PRESET_WARNING,
 })

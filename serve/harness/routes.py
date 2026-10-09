@@ -49,6 +49,35 @@ def handle_get(handler, svc, path: str) -> None:
     if rest == "sessions":
         handler._json(200, {"sessions": mgr.list_sessions()})
         return
+    if rest == "presets":
+        from .presets import list_presets
+        handler._json(200, {"presets": list_presets(mgr.presets_dir)})
+        return
+    if rest == "export":
+        sid = (query.get("session") or [""])[0]
+        fmt = (query.get("format") or ["markdown"])[0]
+        if fmt not in ("markdown", "jsonl"):
+            _bad(handler, 400, "export: format must be markdown|jsonl")
+            return
+        try:
+            live = mgr.live(sid)
+        except FileNotFoundError:
+            _bad(handler, 404, f"no session {sid!r}")
+            return
+        from . import export as _export
+        if fmt == "jsonl":
+            body, ctype, name = _export.to_jsonl(live.handle), "application/x-ndjson", f"{sid}.jsonl"
+        else:
+            body, ctype, name = _export.to_markdown(live.handle), "text/markdown", f"{sid}.md"
+        data = body.encode("utf-8")
+        handler.send_response(200)
+        handler.send_header("Content-Type", f"{ctype}; charset=utf-8")
+        handler.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        handler._cors()
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+        return
     if rest == "events":
         sid = (query.get("session") or [""])[0]
         try:
@@ -66,6 +95,9 @@ def handle_get(handler, svc, path: str) -> None:
         # only land once answered): a reconnecting client needs them to redraw cards
         pending = [{"type": "approval/ask", "seq": -1, "time": None, "data": a}
                    for a in live.channel.pending()]
+        # relayed child asks (ADR-0008): the parent redraws them on reconnect too
+        pending += [{"type": "approval/ask", "seq": -1, "time": None, "data": a}
+                    for a in mgr.pending_child_asks(sid)]
         pending += [{"type": "question/ask", "seq": -1, "time": None,
                      "data": {"qid": q.qid, "question": q.question, "options": q.options, "multi": q.multi}}
                     for q in live.board.pending()]
@@ -94,8 +126,10 @@ def _stream(handler, mgr, sid: str) -> None:
     sub: queue.Queue = mgr.subscribe(sid)          # subscribe replays the log first
     seen_questions: set[str] = set()
     # reconnect: unanswered asks are still live — replay them and remember them
-    seen_asks = {ask["call_id"] for ask in live.channel.pending()}
-    for ask in live.channel.pending():
+    # (own asks plus relayed child asks, ADR-0008)
+    all_asks = list(live.channel.pending()) + mgr.pending_child_asks(sid)
+    seen_asks = {ask["call_id"] for ask in all_asks}
+    for ask in all_asks:
         _sse_row(handler, {"type": "approval/ask", "seq": -1, "time": time.time(), "data": ask})
     last_write = time.monotonic()
     try:
@@ -150,7 +184,10 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
     parts = rest.split("/")
     try:
         if rest == "session":
-            handler._json(200, {"id": mgr.new()})
+            preset = req.get("preset", "default")
+            if not isinstance(preset, str) or not preset.strip():
+                raise ValueError("session: preset must be a name string")
+            handler._json(200, {"id": mgr.new(preset=preset.strip())})
             return
         if len(parts) == 3 and parts[0] == "session":
             sid, action = parts[1], parts[2]

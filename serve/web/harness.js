@@ -46,8 +46,12 @@ async function loadSessions() {
   for (const s of H.sessions) {
     const row = document.createElement("button");
     row.type = "button";
-    row.className = "harness-session" + (s.id === H.sid ? " is-active" : "");
-    row.innerHTML = `${icon("tool", "st-icon st-icon--sm")}<span>${esc(s.id)}</span>` +
+    row.className = "harness-session" + (s.id === H.sid ? " is-active" : "") + (s.origin === "subagent" ? " is-sub" : "");
+    row.dataset.sid = s.id;
+    row.innerHTML = `${icon(s.origin === "subagent" ? "experts" : "tool", "st-icon st-icon--sm")}` +
+      `<span>${esc(s.id)}</span>` +
+      (s.origin === "subagent" ? `<span class="st-badge st-badge--reading" title="subagent of ${esc(s.parent || "")}">sub</span>` : "") +
+      (s.preset && s.preset !== "default" ? `<span class="muted small" title="preset">${esc(s.preset)}</span>` : "") +
       `<span class="muted small">${s.error ? "unreadable" : `${s.events} events`}</span>` +
       (s.busy ? `<span class="st-badge st-badge--generating">running</span>` : "");
     row.onclick = () => openSession(s.id);
@@ -56,14 +60,89 @@ async function loadSessions() {
   if (!H.sessions.length) box.innerHTML = `<p class="muted small">No sessions yet — start one.</p>`;
 }
 
+// keyboard nav for the session list (M4 UX): arrows move focus, Enter opens
+function sessionListKeys(e) {
+  const rows = [...document.querySelectorAll("#h-session-list .harness-session")];
+  if (!rows.length) return;
+  const idx = rows.findIndex((r) => r === document.activeElement);
+  let next = null;
+  if (e.key === "ArrowDown") next = rows[Math.min(idx + 1, rows.length - 1)];
+  else if (e.key === "ArrowUp") next = rows[Math.max(idx - 1, 0)];
+  else if (e.key === "Home") next = rows[0];
+  else if (e.key === "End") next = rows[rows.length - 1];
+  if (next) { e.preventDefault(); next.focus(); }
+}
+$("h-session-list").addEventListener("keydown", sessionListKeys);
+
 $("h-new").onclick = async () => {
   try {
-    const {id} = await hpost("harness/session", {});
+    const {id} = await hpost("harness/session", {preset: $("h-preset").value || "default"});
     store.set("harness.session", id);
     await loadSessions();
     openSession(id);
   } catch (e) { toast("error", "Could not start a session", e.message); }
 };
+
+// ------------------------------------------------------------------ presets + export
+async function loadPresets() {
+  try {
+    const {presets} = await hget("harness/presets");
+    const sel = $("h-preset");
+    sel.innerHTML = "";
+    for (const p of presets) {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.name;
+      if (p.persona) opt.title = p.persona;
+      sel.appendChild(opt);
+    }
+    const saved = store.get("harness.preset", "default");
+    if (presets.some((p) => p.name === saved)) sel.value = saved;
+  } catch { /* the select stays empty: sessions still start with default */ }
+}
+$("h-preset").onchange = () => store.set("harness.preset", $("h-preset").value);
+
+function exportPopover() {
+  closeExportPopover();
+  const pop = document.createElement("div");
+  pop.id = "h-export-pop";
+  pop.className = "st-card harness-popover";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Export session");
+  pop.innerHTML = `<label class="muted small">Download this session</label>` +
+    `<div class="harness-popover__actions">` +
+    `<button class="st-btn st-btn--primary" id="h-export-md">Markdown</button>` +
+    `<button class="st-btn st-btn--secondary" id="h-export-jsonl">JSONL</button></div>` +
+    `<p class="muted small">JSONL includes raw tool output — treat it as sensitive.</p>`;
+  $("h-bar").appendChild(pop);
+  $("h-export-md").focus();
+  $("h-export-md").onclick = () => downloadExport("markdown");
+  $("h-export-jsonl").onclick = () => downloadExport("jsonl");
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeExportPopover(); $("h-export").focus(); } });
+}
+function closeExportPopover() {
+  const pop = document.getElementById("h-export-pop");
+  if (pop) pop.remove();
+}
+function downloadExport(fmt) {
+  // fetch (not a bare <a>): the route is API-key gated and <a> sends no header
+  fetch(`harness/export?session=${encodeURIComponent(H.sid)}&format=${fmt}`, {headers: headers()})
+    .then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}`);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${H.sid}.${fmt === "jsonl" ? "jsonl" : "md"}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    })
+    .catch((e) => toast("error", "Export", e.message))
+    .finally(closeExportPopover);
+}
+$("h-export").onclick = () => { if (H.sid) exportPopover(); };
 
 // ------------------------------------------------------------------ the stream
 function openSession(sid) {
@@ -180,7 +259,11 @@ function paint(row) {
     H.lastSeq = row.seq;
   }
   if (t === "user/message") {
-    el("st-msg st-msg--user", `<div class="st-bubble">${esc(d.content)}</div>`);
+    if (d.source === "subagent") {
+      subagentCard(d);
+    } else {
+      el("st-msg st-msg--user", `<div class="st-bubble">${esc(d.content)}</div>`);
+    }
     H.busy = true; setBusy(true);
   } else if (t === "assistant/message") {
     if (d.content) el("st-msg st-msg--assistant", `<div class="st-bubble">${esc(d.content)}</div>`);
@@ -222,8 +305,30 @@ function paint(row) {
     el("harness-note", `<span class="muted small">${icon("layers", "st-icon st-icon--sm")} earlier context compacted</span>`);
   } else if (t === "inbox/queued") {
     el("harness-note", `<span class="muted small">${icon("send", "st-icon st-icon--sm")} ${d.preset === "steer" ? "steering this turn: " : "queued for the next turn: "}${esc(String(d.content || "").slice(0, 200))}</span>`);
+  } else if (t === "subagent/spawn") {
+    el("harness-note", `<span class="muted small">${icon("experts", "st-icon st-icon--sm")} subagent ${esc(String(d.child || ""))} started (preset ${esc(String(d.preset || "default"))})</span>`);
+    loadSessions();
+  } else if (t === "preset/warning") {
+    el("harness-note", `<span class="muted small">${icon("warning", "st-icon st-icon--sm")} ${esc(String(d.why || "preset problem"))}</span>`);
   }
   // unknown event types are skipped on purpose (forward compatibility)
+}
+
+// a settled subagent's report: a distinct card, not a user bubble (M4 UX)
+function subagentCard(d) {
+  const content = String(d.content || "");
+  const m = content.match(/^\[subagent (\S+) (\w+)\]/);
+  const child = m ? m[1] : "";
+  const state = m ? m[2] : "settled";
+  const badge = state === "completed" ? "st-badge--reading"
+    : state === "aborted" || state === "error" || state === "blocked" ? "st-badge--error" : "st-badge--generating";
+  const card = el("harness-subagent",
+    `<div class="harness-subagent__head">${icon("experts", "st-icon st-icon--sm")}` +
+    `<h3 class="card-title">Subagent${child ? ` · <button type=\"button\" class=\"harness-session-link\" data-sid=\"${esc(child)}\" title=\"open the child session\">${esc(child)}</button>` : ""}</h3>` +
+    `<span class="st-badge ${badge}">${esc(state)}</span></div>` +
+    `<div class="harness-subagent__body">${esc(content.replace(/^\[subagent \S+ \w+\]\n?/, ""))}</div>`);
+  const link = card.querySelector(".harness-session-link");
+  if (link) link.onclick = (e) => { e.stopPropagation(); openSession(link.dataset.sid); };
 }
 
 // tool cards: the Chat tab's .tool-call pattern (st-collapse + badge + pre)
@@ -275,6 +380,10 @@ function setBusy(busy) {
   pill.dataset.state = busy ? "generating" : "idle";
   $("h-state-text").textContent = busy ? "working" : "idle";
   $("h-cancel").hidden = !busy;
+  // stop cascades to running subagents (ADR-0008): say so when they exist
+  const kids = H.sessions.filter((s) => s.parent === H.sid && s.busy).length;
+  $("h-cancel").title = kids ? `Stop the current turn (and ${kids} running subagent${kids > 1 ? "s" : ""})`
+                             : "Stop the current turn";
   // steering must be legible before the send, not after (UX review)
   if (!$("h-input").disabled)
     $("h-input").placeholder = busy ? "working — Enter steers this turn" : "Give the agent a task…";
@@ -294,7 +403,8 @@ function showUsage(u) {
 // ------------------------------------------------------------------ approvals + questions
 function approvalCard(d) {
   const card = el("harness-approval",
-    `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}<span class="card-title">approve ${esc(d.tool)}?</span></div>` +
+    `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
+    `<span class="card-title">approve ${esc(d.tool)}?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
     `<pre class="st-code">${esc(d.preview || "")}</pre>` +
     `<div class="harness-approval__actions">` +
     `<button class="st-btn st-btn--primary" data-a="allow-once">Allow once</button>` +
@@ -371,7 +481,7 @@ function composerEnabled(on) {
   $("h-input").disabled = !on;
   $("h-input").placeholder = on ? "Give the agent a task…" : "Start or open a session first";
   // the whole session-scoped bar is honest about the empty state (UX review)
-  for (const id of ["h-plan", "h-goal", "h-fork", "h-policy", "h-allowlist"]) $(id).disabled = !on;
+  for (const id of ["h-plan", "h-goal", "h-fork", "h-policy", "h-allowlist", "h-export"]) $(id).disabled = !on;
 }
 
 // plan / goal mode chips + buttons (ADR-0007). State is tracked in H (not read
@@ -431,7 +541,7 @@ function goalPopover() {
   $("h-goal-close").onclick = closeGoalPopover;
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); $("h-goal-save").click(); }
-    if (e.key === "Escape") closeGoalPopover();
+    if (e.key === "Escape") { closeGoalPopover(); $("h-goal").focus(); }
   });
 }
 function closeGoalPopover() {
@@ -439,6 +549,18 @@ function closeGoalPopover() {
   if (pop) pop.remove();
 }
 $("h-goal").onclick = () => { if (H.sid) goalPopover(); };
+
+// "/" focuses the composer from the transcript (dsh-style; M4 UX)
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.isComposing) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+  const view = document.getElementById("view-harness");
+  if (!view || view.hidden) return;
+  if ($("h-input").disabled) return;
+  e.preventDefault();
+  $("h-input").focus();
+});
 
 // composer: idle -> new turn; busy -> steer the running turn (dsh semantics)
 $("h-composer").onsubmit = async (e) => {
@@ -490,6 +612,7 @@ async function savePolicy() {
 // ------------------------------------------------------------------ start
 (async function harnessBoot() {
   $("h-allowlist").value = store.get("harness.allowlist", []).join(", ");
+  await loadPresets();
   await loadSessions();
   const saved = store.get("harness.session", null);
   if (saved && H.sessions.some((s) => s.id === saved)) openSession(saved);

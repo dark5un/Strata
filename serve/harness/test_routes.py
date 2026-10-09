@@ -180,6 +180,43 @@ class SessionCommandTests(RoutesBase):
                             {"call_id": "nope", "outcome": "deny"})
         self.assertEqual(code, 409)
 
+    def test_presets_route(self):
+        code, body = self.get("/harness/presets")
+        self.assertEqual(code, 200)
+        names = [p["name"] for p in body["presets"]]
+        self.assertIn("default", names)
+        self.assertIn("researcher", names)          # the bundled example
+
+    def test_new_session_preset_validation(self):
+        code, _ = self.post("/harness/session", {"preset": 5})
+        self.assertEqual(code, 400)
+        code, body = self.post("/harness/session", {"preset": "researcher"})
+        self.assertEqual(code, 200)
+        _, listing = self.get("/harness/sessions")
+        row = next(s for s in listing["sessions"] if s["id"] == body["id"])
+        self.assertEqual(row["preset"], "researcher")
+        self.assertEqual(row["origin"], "user")
+
+    def test_export_routes(self):
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        self.post(f"/harness/session/{sid}/message", {"content": "hello"})
+        self.wait_idle(sid)
+        import urllib.request
+        with urllib.request.urlopen(f"{self.base}/harness/export?session={sid}&format=markdown", timeout=10) as r:
+            self.assertEqual(r.status, 200)
+            self.assertIn("attachment", r.headers.get("Content-Disposition", ""))
+            text = r.read().decode()
+        self.assertIn(f"# Harness session {sid}", text)
+        self.assertIn("hello", text)
+        with urllib.request.urlopen(f"{self.base}/harness/export?session={sid}&format=jsonl", timeout=10) as r:
+            lines = r.read().decode().splitlines()
+        self.assertEqual(json.loads(lines[0])["type"], "session/header")
+        code, _ = self.get(f"/harness/export?session={sid}&format=exe")
+        self.assertEqual(code, 400)
+        code, _ = self.get("/harness/export?session=nope&format=markdown")
+        self.assertEqual(code, 404)
+
     def test_events_include_pending_asks(self):
         # a blocked approval must be visible through /harness/events (reconnect path)
         self.mgr.engine_factory = scripted([

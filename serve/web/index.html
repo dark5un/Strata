@@ -210,6 +210,9 @@
           </select>
           <input class="st-input" id="h-allowlist" placeholder="patterns: shell:echo*, write_file"
                  aria-label="Approval allowlist patterns, comma-separated" hidden>
+          <label class="muted small" for="h-preset">preset</label>
+          <select class="st-input" id="h-preset" aria-label="Agent preset for new sessions" title="Applies to new sessions; fork to change a running one"></select>
+          <button class="st-btn st-btn--secondary" id="h-export" title="Export this session (Markdown or raw JSONL)" aria-haspopup="true">Export</button>
           <button class="st-btn st-btn--secondary" id="h-plan" title="Plan mode: design first, no machine changes" aria-pressed="false">Plan</button>
           <button class="st-btn st-btn--secondary" id="h-goal" title="Goal mode: keep working toward an objective across turns" aria-pressed="false">Goal</button>
           <button class="st-btn st-btn--secondary" id="h-fork" title="Fork this session">Fork</button>
