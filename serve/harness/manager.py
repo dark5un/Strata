@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -150,7 +151,11 @@ class HarnessManager:
                 pass
         finally:
             live.busy = False
-            # rows reach subscribers live through handle.on_append (no end-of-turn bulk)
+            # rows reach subscribers live through handle.on_append (no end-of-turn bulk);
+            # this synthetic notice lands AFTER the flag clears, so the UI's session
+            # list never reads a stale busy=True next to a fresh turn/end
+            live.publish({"type": "session/idle", "seq": -1, "time": time.time(),
+                          "data": {"session": live.session_id}})
 
     def cancel(self, session_id: str) -> bool:
         live = self._live.get(session_id)

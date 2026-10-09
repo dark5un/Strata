@@ -208,10 +208,12 @@
             <option value="never">never (deny unless allowlisted)</option>
             <option value="allowlist">allowlist</option>
           </select>
+          <input class="st-input" id="h-allowlist" placeholder="patterns: shell:echo*, write_file"
+                 aria-label="Approval allowlist patterns, comma-separated" hidden>
           <button class="st-btn st-btn--secondary" id="h-fork" title="Fork this session">Fork</button>
           <button class="st-btn st-btn--danger" id="h-cancel" title="Stop the current turn" hidden>Stop</button>
         </div>
-        <div class="harness-transcript" id="h-transcript" aria-live="polite"></div>
+        <div class="harness-transcript" id="h-transcript"></div>
         <form class="st-composer" id="h-composer">
           <textarea id="h-input" rows="2" placeholder="Give the agent a task&hellip;" aria-label="Message"></textarea>
           <div class="st-composer__bar">

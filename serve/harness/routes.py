@@ -62,7 +62,14 @@ def handle_get(handler, svc, path: str) -> None:
             _bad(handler, 404, f"no session {sid!r}")
             return
         rows = live.handle.snapshot(since)
-        handler._json(200, {"events": rows, "last_seq": live.handle.last_seq, "busy": live.busy})
+        # pending asks/questions are process-local (the durable asked/decided rows
+        # only land once answered): a reconnecting client needs them to redraw cards
+        pending = [{"type": "approval/ask", "seq": -1, "time": None, "data": a}
+                   for a in live.channel.pending()]
+        pending += [{"type": "question/ask", "seq": -1, "time": None,
+                     "data": {"qid": q.qid, "question": q.question, "options": q.options, "multi": q.multi}}
+                    for q in live.board.pending()]
+        handler._json(200, {"events": rows, "pending": pending, "last_seq": live.handle.last_seq, "busy": live.busy})
         return
     if rest == "stream":
         _stream(handler, mgr, (query.get("session") or [""])[0])

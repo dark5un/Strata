@@ -1,18 +1,26 @@
 // serve/web/harness.js — the Harness tab (strata-harness). Vanilla, no build step
 // (ADR-0005); loaded on first use by app.js's loadHarness(). Reuses app.js's
-// globals ($, icon, esc, headers, store, toast) and Strata's design system
-// classes only. The transcript is the session event log (ADR-0004): durable
-// rows arrive over SSE with their seq; synthetic rows (approval/ask,
-// question/ask, inbox/queued) carry seq -1 and reconcile on reconnect.
+// globals ($, icon, esc, fmt, headers, store, toast) and Strata's design system
+// classes only — tool cards use the Chat tab's .tool-call markup, so both tabs
+// render a tool call the same way. The transcript is the session event log
+// (ADR-0004): durable rows arrive over SSE with their seq; synthetic rows
+// (approval/ask, question/ask, inbox/queued) carry seq -1 and reconcile through
+// GET /harness/events' pending list.
 "use strict";
 
 const H = {
-  sid: null,            // the session shown now
-  es: null,             // the SSE reader's abort controller
-  lastSeq: -1,          // highest durable seq seen (gap detection)
+  sid: null,             // the session shown now
+  abort: null,           // the live stream's AbortController
+  lastSeq: -1,           // highest durable seq painted (dedup + gap detect)
   busy: false,
   sessions: [],
+  reconciling: false,
+  buffer: [],            // frames that land mid-reconcile (painted after the rebuild)
+  seenAsks: new Set(),   // synthetic ask rows already painted (dedup on reconnect)
+  retryDelay: 1000,
 };
+
+const MAX_RENDERED = 400;   // DOM cap: a long session prunes its oldest rows
 
 // ------------------------------------------------------------------ fetch helpers
 async function hget(path) {
@@ -39,7 +47,7 @@ async function loadSessions() {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "harness-session" + (s.id === H.sid ? " is-active" : "");
-    row.innerHTML = `${icon("chat", "st-icon st-icon--sm")}<span>${esc(s.id)}</span>` +
+    row.innerHTML = `${icon("tool", "st-icon st-icon--sm")}<span>${esc(s.id)}</span>` +
       `<span class="muted small">${s.error ? "unreadable" : `${s.events} events`}</span>` +
       (s.busy ? `<span class="st-badge st-badge--generating">running</span>` : "");
     row.onclick = () => openSession(s.id);
@@ -62,6 +70,9 @@ function openSession(sid) {
   H.sid = sid;
   store.set("harness.session", sid);
   H.lastSeq = -1;
+  H.seenAsks = new Set();
+  H.buffer = [];
+  H.retryDelay = 1000;
   setBusy(false);
   $("h-transcript").innerHTML = `<p class="muted">Loading session ${esc(sid)}&hellip;</p>`;
   loadSessions();
@@ -69,16 +80,19 @@ function openSession(sid) {
 }
 
 function startStream() {
-  if (H.es) H.es.abort();
+  if (H.abort) H.abort.abort();
   const ctrl = new AbortController();
-  H.es = ctrl;
+  H.abort = ctrl;
   fetch(`harness/stream?session=${encodeURIComponent(H.sid)}`, {headers: headers(), signal: ctrl.signal})
     .then(async (r) => {
-      if (!r.ok || !r.body) { toast("error", "Harness stream", `${r.status}`); return; }
+      if (!r.ok || !r.body) { streamError(`${r.status}`); return; }
       const reader = r.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
+      // the stream replays the whole log from seq 0: reset the dedup state to match
       $("h-transcript").innerHTML = "";
+      H.lastSeq = -1;
+      H.seenAsks = new Set();
       for (;;) {
         const {value, done} = await reader.read();
         if (done) break;
@@ -91,40 +105,75 @@ function startStream() {
           if (!line) continue;                       // ": keep-alive" comment frames
           let row;
           try { row = JSON.parse(line.slice(6)); } catch (e) { continue; }
-          if (row.seq >= 0) {
-            if (row.seq > H.lastSeq + 1 && H.lastSeq >= 0) reconcile();   // a gap: refetch the log
-            H.lastSeq = Math.max(H.lastSeq, row.seq);
-          }
-          paint(row);
+          if (row.seq >= 0 && row.seq > H.lastSeq + 1 && H.lastSeq >= 0) { reconcile(); continue; }
+          if (H.reconciling) H.buffer.push(row);
+          else paint(row);
         }
       }
+      streamEnded();                                  // clean EOF: the server closed the stream
     })
-    .catch((e) => { if (e.name !== "AbortError") toast("warn", "Harness stream ended", e.message, 4000); });
+    .catch((e) => { if (e.name !== "AbortError") streamEnded(); });
+}
+
+function streamEnded() {
+  if (!H.sid) return;
+  reconcile();                                        // catch up on what we missed
+  setTimeout(() => { if (H.abort && !H.abort.signal.aborted) startStream(); }, H.retryDelay);
+  H.retryDelay = Math.min(H.retryDelay * 2, 15000);   // backoff until a frame lands
+}
+
+function streamError(message) {
+  $("h-transcript").innerHTML = `<p class="muted">The harness stream failed (${esc(message)}).
+    <button class="st-btn st-btn--secondary" id="h-retry">Retry</button></p>`;
+  $("h-retry").onclick = () => startStream();
 }
 
 async function reconcile() {
-  if (!H.sid) return;
+  if (H.reconciling || !H.sid) return;
+  H.reconciling = true;
   try {
-    const {events, busy} = await hget(`harness/events?session=${encodeURIComponent(H.sid)}`);
+    const {events, pending, busy} = await hget(`harness/events?session=${encodeURIComponent(H.sid)}`);
+    const buffered = H.buffer; H.buffer = [];
     $("h-transcript").innerHTML = "";
     H.lastSeq = -1;
-    for (const row of events) { H.lastSeq = Math.max(H.lastSeq, row.seq); paint(row, true); }
+    H.seenAsks = new Set();
+    for (const row of events) paint(row);
+    for (const row of pending) paint(row);            // unanswered asks: redraw their cards
+    for (const row of buffered) paint(row);
     H.busy = busy; setBusy(busy);
+    H.retryDelay = 1000;
   } catch (e) { /* the next frame or a reload retries */ }
+  H.reconciling = false;
 }
 
 // ------------------------------------------------------------------ painting
+function nearBottom() {
+  const s = $("h-transcript");
+  return s.scrollHeight - s.scrollTop - s.clientHeight < 120;
+}
+function scrollDown(stick) {
+  const s = $("h-transcript");
+  if (stick) s.scrollTop = s.scrollHeight;
+}
+
 function el(cls, html) {
   const d = document.createElement("div");
   d.className = cls;
   if (html !== undefined) d.innerHTML = html;
-  $("h-transcript").appendChild(d);
-  $("h-transcript").scrollTop = $("h-transcript").scrollHeight;
+  const box = $("h-transcript");
+  const stick = nearBottom();
+  box.appendChild(d);
+  while (box.children.length > MAX_RENDERED) box.removeChild(box.firstChild);   // DOM cap
+  scrollDown(stick);
   return d;
 }
 
-function paint(row, quiet) {
+function paint(row) {
   const t = row.type, d = row.data || {};
+  if (row.seq >= 0) {
+    if (row.seq <= H.lastSeq) return;                 // duplicate (reconcile overlap)
+    H.lastSeq = row.seq;
+  }
   if (t === "user/message") {
     el("st-msg st-msg--user", `<div class="st-bubble">${esc(d.content)}</div>`);
     H.busy = true; setBusy(true);
@@ -132,37 +181,67 @@ function paint(row, quiet) {
     if (d.content) el("st-msg st-msg--assistant", `<div class="st-bubble">${esc(d.content)}</div>`);
     if (d.usage) showUsage(d.usage);
   } else if (t === "tool/call") {
-    const card = el("harness-tool", `<div class="harness-tool__head">${icon("tool", "st-icon st-icon--sm")}` +
-      `<span class="card-title">${esc(d.name)}</span><span class="muted small">${esc(JSON.stringify(d.arguments)).slice(0, 160)}</span></div>` +
-      `<div class="harness-tool__body" hidden></div>`);
-    card.dataset.callId = d.call_id;
+    toolCard(d);
   } else if (t === "tool/result") {
-    const card = [...document.querySelectorAll(".harness-tool")].reverse()
-      .find((c) => c.dataset.callId === d.call_id);
-    const body = card ? card.querySelector(".harness-tool__body") : el("harness-tool").querySelector(".harness-tool__body");
-    if (body) {
-      body.hidden = false;
-      body.innerHTML = `<pre class="st-code${d.is_error ? " harness-tool__error" : ""}">${esc(d.text)}</pre>` +
-        (d.spill ? `<p class="muted small">full output: ${esc(d.spill.locator)}</p>` : "");
-      if (card) card.querySelector(".harness-tool__head").classList.add(d.is_error ? "is-error" : "is-done");
-    }
+    fillToolCard(d);
   } else if (t === "approval/ask") {
+    if (H.seenAsks.has(d.call_id)) return;
+    H.seenAsks.add(d.call_id);
     approvalCard(d);
+  } else if (t === "approval/asked") {
+    // the durable twin of the synthetic ask, appended at decision time: the
+    // card is already painted (or the pending list brings it) — skip, no duplicate
   } else if (t === "approval/decided") {
     markDecided(d.call_id, d.outcome);
   } else if (t === "question/ask") {
+    if (H.seenAsks.has(d.qid)) return;
+    H.seenAsks.add(d.qid);
     questionCard(d);
   } else if (t === "turn/end") {
     H.busy = false; setBusy(false);
-    loadSessions();          // the session list's event count is stale after a turn
-    if (d.reason !== "completed") el("harness-note", `<span class="muted small">turn ${esc(d.reason)}${d.message ? `: ${esc(String(d.message)).slice(0, 200)}` : ""}</span>`);
+    if (d.reason !== "completed")
+      el("harness-note", `<span class="muted small">turn ${esc(d.reason)}${d.message ? `: ${esc(String(d.message)).slice(0, 200)}` : ""}</span>`);
+  } else if (t === "session/idle") {
+    // synthetic: lands after busy=False on the server — the list's badge is fresh now
+    setBusy(false);
+    loadSessions();
   } else if (t === "compaction/summary") {
     el("harness-note", `<span class="muted small">${icon("layers", "st-icon st-icon--sm")} earlier context compacted</span>`);
   } else if (t === "inbox/queued") {
     el("harness-note", `<span class="muted small">queued for the next turn: ${esc(d.content || "")}</span>`);
   }
   // unknown event types are skipped on purpose (forward compatibility)
-  if (!quiet) { /* nothing else to do */ }
+}
+
+// tool cards: the Chat tab's .tool-call pattern (st-collapse + badge + pre)
+function toolCard(d) {
+  const card = el("harness-tool-wrap",
+    `<details class="st-collapse tool-call" data-state="running" open>` +
+    `<summary>${icon("tool", "st-icon st-icon--sm")}` +
+    `<span class="tool-call__name" title="${esc(d.name)}">${esc(d.name)}</span>` +
+    `<span class="tool-call__preview muted">${esc(JSON.stringify(d.arguments)).slice(0, 200)}</span>` +
+    `<span class="st-badge st-badge--generating">running</span>` +
+    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
+    `<div class="st-collapse__body"><div class="tool-call__label">Arguments</div>` +
+    `<pre class="tool-call__pre">${esc(JSON.stringify(d.arguments, null, 1))}</pre></div></details>`);
+  card.dataset.callId = d.call_id;
+}
+
+function fillToolCard(d) {
+  const wrap = [...document.querySelectorAll(".harness-tool-wrap")].reverse()
+    .find((c) => c.dataset.callId === d.call_id);
+  const details = wrap ? wrap.querySelector("details") : null;
+  const body = details ? details.querySelector(".st-collapse__body") : null;
+  if (!body) return;
+  body.insertAdjacentHTML("beforeend",
+    `<div class="tool-call__label">${d.is_error ? "Error" : "Result"}` +
+    `${d.spill ? ` &middot; full output: ${esc(d.spill.locator)}` : ""}</div>` +
+    `<pre class="tool-call__pre">${esc(d.text)}</pre>`);
+  const badge = details.querySelector(".st-badge");
+  details.dataset.state = d.is_error ? "error" : "done";
+  badge.className = "st-badge " + (d.is_error ? "st-badge--error" : "st-badge--reading");
+  badge.textContent = d.is_error ? "error" : "done";
+  if (d.is_error) details.open = true;
 }
 
 function setBusy(busy) {
@@ -175,11 +254,13 @@ function setBusy(busy) {
 
 function showUsage(u) {
   const max = (lastMetrics && lastMetrics.engine && lastMetrics.engine.max_context) || 0;
-  const used = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
-  $("h-ctx").textContent = max ? `context ${Math.round((used / max) * 100)}% (${used}/${max})` :
-    `tokens ${used}`;
-  if (max && used / max > 0.85) $("h-ctx").classList.add("harness-ctx--warn");
-  else $("h-ctx").classList.remove("harness-ctx--warn");
+  const used = u.prompt_tokens || 0;                  // what the last request actually held
+  const pct = max ? Math.round((used / max) * 100) : 0;
+  const warn = max && pct > 85;
+  $("h-ctx").innerHTML = max
+    ? `${warn ? `${icon("warning", "st-icon st-icon--sm")} near the limit: ` : ""}context ${pct}% (${fmt(used)}/${fmt(max)})`
+    : `prompt ${fmt(used)} tokens`;
+  $("h-ctx").classList.toggle("harness-ctx--warn", warn);
 }
 
 // ------------------------------------------------------------------ approvals + questions
@@ -217,23 +298,39 @@ function questionCard(d) {
   const row = document.createElement("div");
   row.className = "harness-question__actions";
   card.appendChild(row);
+  const chosen = new Set();
   const send = async (answer) => {
     try {
       await hpost(`harness/session/${H.sid}/answer`, {qid: d.qid, answer});
-      row.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+      card.querySelectorAll("button").forEach((x) => { x.disabled = true; });
     } catch (e) { toast("warn", "Answer", e.message); }
   };
   for (const opt of d.options || []) {
     const b = document.createElement("button");
     b.className = "st-btn st-btn--secondary";
     b.textContent = opt.label || "";
-    b.onclick = () => send({selected: opt.label || ""});
+    if (d.multi) {
+      b.onclick = () => {                              // multi-select: toggle, then Send
+        if (chosen.has(opt.label)) { chosen.delete(opt.label); b.classList.remove("is-on"); }
+        else { chosen.add(opt.label); b.classList.add("is-on"); }
+      };
+    } else {
+      b.onclick = () => send({selected: opt.label || ""});
+    }
+    row.appendChild(b);
+  }
+  if (d.multi && (d.options || []).length) {
+    const b = document.createElement("button");
+    b.className = "st-btn st-btn--primary";
+    b.textContent = "Send";
+    b.onclick = () => send({selected: [...chosen]});
     row.appendChild(b);
   }
   const input = document.createElement("input");
   input.className = "st-input";
-  input.placeholder = "answer&hellip;";
+  input.placeholder = "answer…";
   input.setAttribute("aria-label", "Answer");
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send({text: input.value}); } });
   const b = document.createElement("button");
   b.className = "st-btn st-btn--primary";
   b.textContent = "Send";
@@ -242,10 +339,16 @@ function questionCard(d) {
 }
 
 // ------------------------------------------------------------------ composer + controls
+function composerEnabled(on) {
+  $("h-input").disabled = !on;
+  $("h-input").placeholder = on ? "Give the agent a task…" : "Start or open a session first";
+}
+
 $("h-composer").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("h-input").value.trim();
-  if (!text || !H.sid) return;
+  if (!text) return;
+  if (!H.sid) { toast("info", "No session", "Start one with the + button."); return; }
   $("h-input").value = "";
   try {
     await hpost(`harness/session/${H.sid}/message`, {content: text});
@@ -270,18 +373,28 @@ $("h-fork").onclick = async () => {
   } catch (e) { toast("error", "Fork", e.message); }
 };
 
-$("h-policy").onchange = async () => {
+// approval policy: ask | never | allowlist (patterns ride the store)
+$("h-policy").onchange = () => {
+  $("h-allowlist").hidden = $("h-policy").value !== "allowlist";
+  savePolicy();
+};
+$("h-allowlist").onchange = savePolicy;
+async function savePolicy() {
   if (!H.sid) return;
+  const pats = $("h-allowlist").value.split(",").map((p) => p.trim()).filter(Boolean);
+  store.set("harness.allowlist", pats);
   try {
-    await hpost(`harness/session/${H.sid}/policy`, {mode: $("h-policy").value, allowlist: store.get("harness.allowlist", [])});
+    await hpost(`harness/session/${H.sid}/policy`, {mode: $("h-policy").value, allowlist: pats});
     toast("success", "Approval policy", $("h-policy").value);
   } catch (e) { toast("error", "Policy", e.message); }
-};
+}
 
 // ------------------------------------------------------------------ start
 (async function harnessBoot() {
+  $("h-allowlist").value = store.get("harness.allowlist", []).join(", ");
   await loadSessions();
   const saved = store.get("harness.session", null);
   if (saved && H.sessions.some((s) => s.id === saved)) openSession(saved);
   else if (H.sessions.length) openSession(H.sessions[0].id);
+  else composerEnabled(false);
 })();

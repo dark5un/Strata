@@ -157,6 +157,23 @@ class SessionCommandTests(RoutesBase):
                             {"call_id": "nope", "outcome": "deny"})
         self.assertEqual(code, 409)
 
+    def test_events_include_pending_asks(self):
+        # a blocked approval must be visible through /harness/events (reconnect path)
+        self.mgr.engine_factory = scripted([
+            EngineResult(tool_calls=[{"id": "c1", "name": "shell", "arguments": {"command": "echo p"}}],
+                         usage={"prompt_tokens": 3, "completion_tokens": 2}),
+            EngineResult(content="ok", usage={}),
+        ])
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        self.post(f"/harness/session/{sid}/message", {"content": "go"})
+        live = self.mgr.live(sid)
+        live.approvals.get(timeout=3)                 # the ask lands
+        _, ev = self.get(f"/harness/events?session={sid}")
+        self.assertEqual([p["type"] for p in ev["pending"]], ["approval/ask"])
+        self.assertEqual(ev["pending"][0]["data"]["call_id"], "c1")
+        self.mgr.decide(sid, "c1", "deny")            # settle the worker for teardown
+
 
 class StreamTests(RoutesBase):
     def read_sse(self, f, want: int, timeout: float = 10.0):
