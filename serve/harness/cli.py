@@ -21,7 +21,9 @@ from .manager import HarnessManager
 
 def _api_key(args) -> str | None:
     if args.api_key_env:
-        return os.environ.get(args.api_key_env)
+        key = os.environ.get(args.api_key_env)
+        if key:
+            return key
     cfg = Path.home() / ".local/share/strata/config-5090-1m/strata-iq3_s.json"
     if cfg.exists():
         import json
