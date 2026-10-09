@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,7 @@ class Live:
     loop: Loop
     board: QuestionBoard
     approvals: queue.Queue[dict]
+    channel: ApprovalChannel | None = None
     deliver: object = None                # answerer-side: deliver(call_id, outcome) -> bool
     worker: threading.Thread | None = None
     subs: list[queue.Queue] = field(default_factory=list)
@@ -110,8 +112,10 @@ class HarnessManager:
         loop._policy = policy                     # type: ignore[attr-defined]  # routes update it
         loop._broker = broker                     # type: ignore[attr-defined]
         loop._board = board                       # type: ignore[attr-defined]
-        return Live(session_id=session_id, handle=h, loop=loop, board=board, approvals=approvals,
-                    deliver=channel.deliver)
+        live = Live(session_id=session_id, handle=h, loop=loop, board=board, approvals=approvals,
+                    channel=channel, deliver=channel.deliver)
+        h.on_append = live.publish                # every durable row streams the moment it lands
+        return live
 
     def fork(self, session_id: str, boundary_seq: int | None = None) -> str:
         src = open_session(self.dir, session_id)
@@ -135,7 +139,6 @@ class HarnessManager:
 
     def _run_turn(self, live: Live, content: str) -> None:
         h = live.handle
-        before = len(h.events)
         try:
             # context pressure: prune oversized results before deriving (cheap, no model call)
             prune_tool_results(h)
@@ -148,8 +151,11 @@ class HarnessManager:
                 pass
         finally:
             live.busy = False
-            for row in h.snapshot(before):
-                live.publish(row)
+            # rows reach subscribers live through handle.on_append (no end-of-turn bulk);
+            # this synthetic notice lands AFTER the flag clears, so the UI's session
+            # list never reads a stale busy=True next to a fresh turn/end
+            live.publish({"type": "session/idle", "seq": -1, "time": time.time(),
+                          "data": {"session": live.session_id}})
 
     def cancel(self, session_id: str) -> bool:
         live = self._live.get(session_id)
@@ -157,6 +163,8 @@ class HarnessManager:
             return False
         live.loop.request_cancel()
         live.board.cancel_all()
+        if live.channel is not None:            # a blocked approval must not hold the worker
+            live.channel.cancel_pending()
         return True
 
     def answer(self, session_id: str, qid: str, answer: dict) -> bool:
@@ -201,17 +209,20 @@ class ApprovalChannel:
     queue fed by deliver(). The answerer never consumes its own notification."""
     notices: queue.Queue[dict]
     _decisions: dict[str, queue.Queue]
+    _asks: dict[str, dict]
     _lock: threading.Lock
 
     def __init__(self, notices: queue.Queue[dict]) -> None:
         self.notices = notices
         self._decisions = {}
+        self._asks = {}
         self._lock = threading.Lock()
 
     def answerer(self, req) -> str:
         dq: queue.Queue = queue.Queue()
         with self._lock:
             self._decisions[req.call_id] = dq
+            self._asks[req.call_id] = {"call_id": req.call_id, "tool": req.tool, "preview": req.args_preview}
         self.notices.put({"call_id": req.call_id, "tool": req.tool, "preview": req.args_preview})
         try:
             decision = dq.get(timeout=3600)
@@ -220,6 +231,7 @@ class ApprovalChannel:
         finally:
             with self._lock:
                 self._decisions.pop(req.call_id, None)
+                self._asks.pop(req.call_id, None)
         return decision["outcome"]
 
     def deliver(self, call_id: str, outcome: str) -> bool:
@@ -229,3 +241,15 @@ class ApprovalChannel:
             return False
         dq.put({"outcome": outcome})
         return True
+
+    def pending(self) -> list[dict]:
+        """Unanswered asks: a reconnecting client reconciles with these."""
+        with self._lock:
+            return list(self._asks.values())
+
+    def cancel_pending(self) -> None:
+        """A cancelled turn must not leave the worker blocked on an ask."""
+        with self._lock:
+            dqs = list(self._decisions.values())
+        for dq in dqs:
+            dq.put({"outcome": "cancelled"})

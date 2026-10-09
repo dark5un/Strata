@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
+<link rel="stylesheet" href="web/harness.css">
 <script>
   // the theme before the first paint: the saved choice, else the system's
   try {
@@ -26,6 +27,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
+    <button class="st-tab" role="tab" id="tab-btn-harness" aria-controls="view-harness" aria-selected="false" data-tab="harness" hidden>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-tool"/></svg>Harness</button>
   </nav>
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
@@ -180,6 +183,44 @@
         <form class="cfg-form" id="cfg-form"></form>
         <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
           <span class="muted small" id="cfg-msg" role="status"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ Harness (strata-harness) ============================ -->
+  <section class="view view--harness" id="view-harness" role="tabpanel" aria-labelledby="tab-btn-harness" hidden>
+    <div class="harness-layout">
+      <aside class="st-card harness-sessions" id="harness-sessions">
+        <div class="req-head"><span class="card-title">Sessions</span>
+          <button class="st-btn st-btn--icon" id="h-new" title="New session" aria-label="New session">
+            <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button></div>
+        <div id="h-session-list"></div>
+      </aside>
+      <div class="harness-main">
+        <div class="harness-bar" id="h-bar">
+          <span class="st-pill" id="h-state" data-state="idle" role="status"><span class="st-pill__dot"></span>
+            <span id="h-state-text">idle</span></span>
+          <span class="muted small" id="h-ctx"></span>
+          <span class="st-header__spacer"></span>
+          <label class="muted small" for="h-policy">approvals</label>
+          <select class="st-input" id="h-policy">
+            <option value="ask">ask every time</option>
+            <option value="never">never (deny unless allowlisted)</option>
+            <option value="allowlist">allowlist</option>
+          </select>
+          <input class="st-input" id="h-allowlist" placeholder="patterns: shell:echo*, write_file"
+                 aria-label="Approval allowlist patterns, comma-separated" hidden>
+          <button class="st-btn st-btn--secondary" id="h-fork" title="Fork this session">Fork</button>
+          <button class="st-btn st-btn--danger" id="h-cancel" title="Stop the current turn" hidden>Stop</button>
+        </div>
+        <div class="harness-transcript" id="h-transcript"></div>
+        <form class="st-composer" id="h-composer">
+          <textarea id="h-input" rows="2" placeholder="Give the agent a task&hellip;" aria-label="Message"></textarea>
+          <div class="st-composer__bar">
+            <button type="submit" class="st-btn st-btn--icon" title="Send" aria-label="Send">
+              <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
+          </div>
+        </form>
       </div>
     </div>
   </section>

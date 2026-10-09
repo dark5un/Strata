@@ -17,6 +17,7 @@ import json
 import os
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from . import HARNESS_FORMAT_VERSION
@@ -41,6 +42,7 @@ class SessionHandle:
         self._next_seq = (events[-1]["seq"] + 1) if events else 0
         self._dirty: list[dict] = []
         self._lock = threading.RLock()   # appends from parallel tool workers serialize here
+        self.on_append: Callable[[dict], None] | None = None   # live hook: (row) -> None (the manager's SSE fan-out)
 
     def append(self, event_type: str, data: dict, **surface) -> dict:
         with self._lock:
@@ -49,6 +51,8 @@ class SessionHandle:
             self._next_seq += 1
             self.events.append(row)
             self._dirty.append(row)
+            if self.on_append is not None:
+                self.on_append(row)
             return row
 
     def append_many(self, rows: list[dict]) -> None:

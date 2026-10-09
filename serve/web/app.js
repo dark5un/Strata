@@ -73,15 +73,30 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "monitor", "about", "harness"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "monitor", "about", "harness"]) $(`view-${v}`).hidden = v !== tab;
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
+  if (tab === "harness" && $("h-input")) $("h-input").focus();
   if (tab === "monitor") loadMcp();
   if (tab === "about") loadConfig();
+  if (tab === "harness") loadHarness();
   if (lastMetrics) render(lastMetrics);
 }
+// strata-harness: the tab's script loads on first use (like the Monitor's lazy cards)
+let harnessLoaded = false;
+function loadHarness() {
+  if (harnessLoaded) return;
+  harnessLoaded = true;
+  const s = document.createElement("script");
+  s.src = "web/harness.js";
+  document.body.appendChild(s);
+}
+// the Harness tab only shows when the server runs with --harness (GET /harness/sessions answers)
+fetch("harness/sessions", {headers: headers()}).then((r) => {
+  if (r.ok) $("tab-btn-harness").hidden = false;
+}).catch(() => {});
 for (const b of document.querySelectorAll(".st-tab")) b.onclick = () => showTab(b.dataset.tab);
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
