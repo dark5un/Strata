@@ -56,7 +56,7 @@ class RoutesBase(unittest.TestCase):
         self._env_key = "STRATA_HARNESS_PRESET_DIR"
         self._saved_env = os.environ.get(self._env_key)
         os.environ[self._env_key] = str(self.root / "user-presets")
-        self.svc.harness = self.mgr
+        self.svc.harness = self.mgr  # type: ignore[attr-defined]  # the fork's attribute: set by integrate.attach, read via getattr (ADR-0001: no upstream class edits)
         self.httpd = serve(self.svc, port=0)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
@@ -102,7 +102,7 @@ class RoutesBase(unittest.TestCase):
 
 class GateTests(RoutesBase):
     def test_404_when_harness_off(self):
-        self.svc.harness = None
+        self.svc.harness = None  # type: ignore[attr-defined]
         code, body = self.get("/harness/sessions")
         self.assertEqual(code, 404)
         self.assertIn("not enabled", body["error"]["message"])

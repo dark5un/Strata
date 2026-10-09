@@ -68,8 +68,10 @@ def handle_get(handler, svc, path: str) -> None:
     if rest == "tools":
         # the live registry's tool names: the preset editor's checkboxes (ADR-0011)
         from .tools import default_registry
-        names = sorted(t.name for t in default_registry(root=mgr.workspace_root))
-        handler._json(200, {"tools": names})
+        names = {t.name for t in default_registry(root=mgr.workspace_root)}
+        if mgr.mcp_hub is not None:
+            names |= {t["name"] for t in mgr.mcp_hub.template_tools()}  # ADR-0012
+        handler._json(200, {"tools": sorted(names)})
         return
     if rest == "export":
         sid = (query.get("session") or [""])[0]

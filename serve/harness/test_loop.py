@@ -334,6 +334,59 @@ class LoopTests(unittest.TestCase):
         lp.send("go")
         self.assertEqual(seen["args"], {"command": long_cmd})
 
+    def test_pre_tool_hook_denies_before_the_approval_gate(self):
+        # ADR-0013: a hook refusal is a normal error result; the human is never asked
+        ran = {"v": False}
+        asked = {"n": 0}
+
+        def spy(args, ctx):
+            ran["v"] = True
+            return {"text": "ran"}
+        tool = ToolDefinition(name="shell", description="s", parameters={"type": "object"}, execute=spy)
+        tool.needs_approval = True
+
+        def answerer(req):
+            asked["n"] += 1
+            return "allow-once"
+        lp, h = self._loop([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "shell", "arguments": {"command": "rm -rf /"}}], "usage": {}},
+            {"content": "ok", "tool_calls": [], "usage": {}},
+        ], tools=[tool], approval=answerer)
+        lp.pre_tool.append(lambda loop, name, args: "destructive path" if "rm -rf" in args.get("command", "") else None)
+        lp.send("go")
+        self.assertFalse(ran["v"])
+        self.assertEqual(asked["n"], 0)
+        results = [r for r in h.events if r["type"] == ev.TOOL_RESULT]
+        self.assertIn("blocked by hook: destructive path", results[0]["data"]["text"])
+
+    def test_post_tool_hook_observes_and_cannot_break_the_loop(self):
+        seen = []
+        lp, h = self._loop([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "echo", "arguments": {"v": "x"}}], "usage": {}},
+            {"content": "ok", "tool_calls": [], "usage": {}},
+        ])
+        lp.post_tool.append(lambda loop, name, args, payload: seen.append((name, args, payload["text"])))
+        lp.post_tool.append(lambda *a: 1 / 0)          # a throwing observer must not settle the turn as error
+        turn = lp.send("go")
+        self.assertEqual(turn["reason"], "completed")
+        self.assertEqual(seen, [("echo", {"v": "x"}, "echo:x")])
+
+    def test_pre_tool_hook_throwing_fails_open(self):
+        ran = {"v": False}
+
+        def spy(args, ctx):
+            ran["v"] = True
+            return {"text": "ran"}
+        tool = ToolDefinition(name="echo2", description="s", parameters={"type": "object"}, execute=spy)
+        tool.needs_approval = False
+        lp, h = self._loop([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "echo2", "arguments": {}}], "usage": {}},
+            {"content": "ok", "tool_calls": [], "usage": {}},
+        ], tools=[tool])
+        lp.pre_tool.append(lambda loop, name, args: (_ for _ in ()).throw(RuntimeError("hook down")))
+        lp.send("go")
+        self.assertTrue(ran["v"])                      # observers fail open; the gate stays the human's
+
 
 if __name__ == "__main__":
     unittest.main()

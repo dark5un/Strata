@@ -700,8 +700,10 @@ function approvalHero(d) {
       `<div class="tool-call__label">replace</div>` +
       `<pre class="st-code harness-approval__full">${esc(a.new_string || "")}</pre></div></details>`;
   }
+  const mcp = d.tool.includes("__")   // namespaced = an MCP hub tool (ADR-0012): out of process
+    ? `<span class="st-badge st-badge--reading" title="MCP server &quot;${esc(d.tool.split("__")[0])}&quot; — runs out of process">mcp</span>` : "";
   return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
-    `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
+    `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>? ${mcp}${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
     `<pre class="st-code harness-approval__full">${esc(JSON.stringify(a, null, 1) || d.preview || "")}</pre>`;
 }
 function approvalCard(d) {

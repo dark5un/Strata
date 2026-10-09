@@ -79,7 +79,8 @@ def _session_title(events: list[dict]) -> str:
 class HarnessManager:
     def __init__(self, sessions_dir: Path, engine_factory, *, spill_dir: Path | None = None,
                  workspace_root: Path | None = None, metrics_fn=None,
-                 presets_dir: Path | None = None, sampling: dict | None = None) -> None:
+                 presets_dir: Path | None = None, sampling: dict | None = None,
+                 mcp_hub=None) -> None:
         self.dir = sessions_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.engine_factory = engine_factory          # () -> engine callable
@@ -88,6 +89,7 @@ class HarnessManager:
         self.metrics_fn = metrics_fn                  # Service.metrics(): the monitor JSON (ADR-0002)
         self.presets_dir = presets_dir                # None -> user dir + bundled (ADR-0011)
         self.sampling = dict(sampling or {})          # rides the request/header envelope (M7b)
+        self.mcp_hub = mcp_hub                        # serve/mcp.py's McpHub when MCP servers are set (ADR-0012)
         self._live: dict[str, Live] = {}
         self._lock = threading.RLock()   # reentrant: live() -> _attach() reads the live map for parent lookups
 
@@ -162,11 +164,19 @@ class HarnessManager:
                     ph = open_session(self.dir, h.header["parentSession"]).header
                     ppreset, _ = load_preset(ph.get("agentPreset", "default"), self.presets_dir)
                     if ppreset.allow or ppreset.deny:
-                        parent_effective = {t.name for t in default_registry(root=self.workspace_root)
-                                            if ppreset.permits(t.name)}
+                        names = {t.name for t in default_registry(root=self.workspace_root)}
+                        if self.mcp_hub is not None:
+                            names |= {t["name"] for t in self.mcp_hub.template_tools()}
+                        parent_effective = {n for n in names if ppreset.permits(n)}
                 except Exception:  # noqa: BLE001 - unreadable parent log: no extra restriction
                     pass
         tools = {t.name: t for t in default_registry(board=board, root=self.workspace_root)}
+        if self.mcp_hub is not None:
+            # ADR-0012: the hub's ready tools join the registry, gated like any
+            # machine tool; snapshot at attach (no hot-reload mid-session).
+            from .tools.mcp import mcp_tools
+            for t in mcp_tools(self.mcp_hub):
+                tools.setdefault(t.name, t)
         spill_store = SpillStore(self.spill_dir / session_id)
         for extra in (spill_read_tool(spill_store), plan_mode_tool(board), goal_tool()):
             extra.needs_approval = False      # session-state tools: they touch no machine state

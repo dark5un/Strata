@@ -28,6 +28,7 @@ M7 (transcript honesty + observability):
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import threading
@@ -98,6 +99,16 @@ class Loop:
     approval: Callable[[ApprovalRequest], str | tuple[str, bool]] | None = None
     # pre_step: (loop, inbox) -> optional extra user messages to inject before the step.
     pre_step: list[Callable] = field(default_factory=list)
+    # pre_tool / post_tool (ADR-0013): the hook surface. pre_tool hooks run in
+    # order BEFORE the approval gate; returning a string denies the call with
+    # that reason (a normal error result — the human is never asked what a
+    # policy already refused). A throwing hook is ignored (observers fail
+    # open; the approval broker stays the fail-closed human gate).
+    # post_tool hooks observe (loop, tool_name, args, result_payload) after
+    # the result lands; exceptions are swallowed. Process-local wiring only:
+    # hooks are not serialised, not preset-configurable, not a plugin loader.
+    pre_tool: list[Callable] = field(default_factory=list)
+    post_tool: list[Callable] = field(default_factory=list)
     # system_sections: () -> str | None, joined into one system message at derive time
     # (plan/goal guidance rides these; ADR-0007 keeps modes soft, prompt-only).
     system_sections: list[Callable] = field(default_factory=list)
@@ -256,12 +267,25 @@ class Loop:
             self.session.append(ev.TOOL_CALL, {"call_id": call_id, "name": name, "arguments": args})
             tool = self.tools.get(name)
             if tool is None:
-                self._result(call_id, {"text": f"unknown tool {name!r}", "is_error": True})
+                self._result(call_id, {"text": f"unknown tool {name!r}", "is_error": True}, name=name, args=args)
+                continue
+            blocked = False
+            for hook in self.pre_tool:                # ADR-0013: policy before the human gate
+                try:
+                    reason = hook(self, name, args)
+                except Exception:                     # noqa: BLE001 - observers fail open
+                    reason = None
+                if isinstance(reason, str) and reason:
+                    self._result(call_id, {"text": f"blocked by hook: {reason}", "is_error": True},
+                                 name=name, args=args)
+                    blocked = True
+                    break
+            if blocked:
                 continue
             if getattr(tool, "needs_approval", True):
                 decision = self._ask_approval(call_id, tool, args)
                 if decision not in ("allow-once", "yolo"):
-                    self._result(call_id, {"text": f"approval {decision}", "is_error": True})
+                    self._result(call_id, {"text": f"approval {decision}", "is_error": True}, name=name, args=args)
                     continue
             if not tool.concurrency_safe:
                 if pool is not None:
@@ -320,13 +344,13 @@ class Loop:
         t.join(timeout=tool.timeout_s)
         if t.is_alive():
             self._result(call_id, {"text": f"tool {tool.name} timed out", "is_error": True,
-                                   "outcome": ev.TOOL_OUTCOME_UNKNOWN})
+                                   "outcome": ev.TOOL_OUTCOME_UNKNOWN}, name=tool.name, args=args)
             return False
         r = done.get("r") or {"text": "", "is_error": True}
-        self._result(call_id, r)
+        self._result(call_id, r, name=tool.name, args=args)
         return concluded["v"]
 
-    def _result(self, call_id: str, r: dict) -> None:
+    def _result(self, call_id: str, r: dict, *, name: str = "", args: dict | None = None) -> None:
         payload = {"call_id": call_id, "text": r.get("text", ""), "is_error": bool(r.get("is_error")),
                    "outcome": r.get("outcome")}
         if self.spill is not None:
@@ -339,6 +363,9 @@ class Loop:
         if r.get("meta"):
             payload["meta"] = r["meta"]
         self.session.append(ev.TOOL_RESULT, payload)
+        for hook in self.post_tool:                   # ADR-0013: observers, never policy
+            with contextlib.suppress(Exception):      # an observer cannot break the loop
+                hook(self, name or str(payload.get("name", "")), args or {}, payload)
 
     def _end_turn(self, reason: str, data: dict) -> dict:
         payload = {"reason": reason, **data}
