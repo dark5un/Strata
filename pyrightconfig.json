@@ -1,0 +1,11 @@
+{
+  "include": ["serve/harness"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "standard",
+  "reportMissingImports": "error",
+  "reportOptionalMemberAccess": "error",
+  "reportArgumentType": "error",
+  "reportGeneralTypeIssues": "error",
+  "reportUnboundVariable": "error",
+  "reportUnusedImport": "warning"
+}
