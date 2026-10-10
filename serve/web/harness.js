@@ -1324,8 +1324,10 @@ function goalPopover() {
   $("h-goal-close").onclick = closeGoalPopover;
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); $("h-goal-save").click(); }
-    if (e.key === "Escape") { closeGoalPopover(); $("h-goal").focus(); }
   });
+  // Escape binds on the popover (like every other dialog), not just the input:
+  // scrim-click / global-Escape dispatch the synthetic key to the popover node
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeGoalPopover(); $("h-goal").focus(); } });
 }
 function closeGoalPopover() {
   const pop = document.getElementById("h-goal-pop");
