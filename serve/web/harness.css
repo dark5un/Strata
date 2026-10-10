@@ -91,11 +91,19 @@
 .harness-question__actions input { flex: 1; min-width: 140px; }
 
 .harness-popover { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
-  display: flex; flex-direction: column; gap: var(--st-s-2); padding: var(--st-s-3); min-width: 260px; }
+  display: flex; flex-direction: column; gap: var(--st-s-2); padding: var(--st-s-3); min-width: 260px;
+  /* elevation cue the veil alone can't carry on a same-tone dark theme:
+     lifted one step above --st-surface + a brighter edge + deep shadow */
+  background: var(--st-surface-2); border-color: var(--st-line-strong, var(--st-line));
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .65), 0 3px 10px rgba(0, 0, 0, .5); }
 /* popover focus (UX review): a dialog must visibly own the screen — everything
    behind it dims, including a dialog it was opened over. mountPopover arms one
-   scrim per popover; the stack depth sets z-index so the top dialog stays lit. */
-.harness-scrim { position: fixed; inset: 0; z-index: 28; background: rgba(4, 7, 9, .55); }
+   scrim per popover; the stack depth sets z-index so the top dialog stays lit.
+   NOTE (rendered review): a black scrim over this near-black theme is
+   invisible — the dim must RAISE the tone: a milky veil + blur reads as
+   "recessed" on dark surfaces where darkening cannot. */
+.harness-scrim { position: fixed; inset: 0; z-index: 28; background: rgba(236, 238, 242, .12);
+  backdrop-filter: blur(1.5px); }
 @media (prefers-reduced-motion: no-preference) {
   .harness-scrim { animation: harness-scrim-in 140ms var(--st-ease, ease-out); }
 }
@@ -184,6 +192,8 @@
 .harness-settings-pop { min-width: 340px; max-width: 460px; }
 .harness-settings-grid { display: grid; grid-template-columns: auto 1fr; gap: var(--st-s-2); align-items: center; }
 .harness-settings-grid .st-input { width: 100%; }
+/* manage buttons belong under the control column, not the label column */
+.harness-settings-grid #h-preset-manage, .harness-settings-grid #h-plugin-manage { grid-column: 2; justify-self: start; }
 .harness-settings-btn { gap: var(--st-s-2); }
 .harness-settings-btn #h-settings-summary { font-weight: 500; color: var(--st-ink-soft); }
 /* session delete (M10): revealed on hover/focus of the row, danger-toned;
@@ -193,7 +203,11 @@
 .harness-session:focus-within .harness-session-del { opacity: 1; }
 .harness-session-del:hover { color: var(--st-danger-text); }
 .harness-session-del-acts { display: inline-flex; gap: var(--st-s-1); flex: none; }
-.harness-session-del-acts .st-btn { height: 30px; padding: 0 10px; font-size: var(--st-fs-sm); }
+.harness-session-del-acts .st-btn { height: 26px; padding: 0 8px; font-size: var(--st-fs-xs, 12px); }
+/* while confirming, the row shows ONLY name + verdict: badges and icons give
+   their room to the buttons (a 240px sidebar cannot fit both) */
+.harness-session.is-confirming .st-badge,
+.harness-session.is-confirming > .st-icon { display: none; }
 @media (hover: none) { .harness-session .harness-session-del { opacity: 1; } }
 .harness-ws-chip { display: inline-flex; align-items: center; gap: var(--st-s-1);
   max-width: 220px; }
