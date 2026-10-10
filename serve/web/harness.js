@@ -159,7 +159,7 @@ async function wsPopover() {
     }
     for (const r of list) {
       const li = document.createElement("li");
-      li.innerHTML = `<code class="inline">${esc(r)}</code>` +
+      li.innerHTML = `<code class="inline" title="${esc(r)}">${esc(r)}</code>` +
         (editable ? ` <button class="st-btn st-btn--icon" title="Remove" aria-label="Remove ${esc(r)}">✕</button>` : "");
       if (editable) li.querySelector("button").onclick = () => {
         H.pendingRoots = H.pendingRoots.filter((x) => x !== r);
