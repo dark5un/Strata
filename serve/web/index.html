@@ -217,13 +217,14 @@
               <span id="h-ws-label">workspace</span><span class="st-badge st-badge--reading" id="h-ws-count" hidden></span>
             </button>
             <span class="harness-bar__group">
-              <!-- M10 UX (crowding relief): the settings cluster lives behind one
-                   Settings button; the nodes move into the popover on open and
-                   back on close, so every existing handler stays bound. -->
-              <button class="st-btn st-btn--secondary harness-settings-btn" id="h-settings"
+              <!-- M10 UX: uniformity — every bar action is a plain secondary text
+                   button (Settings · Export · Plan · Goal · Fork); state rides as a
+                   badge only when it deviates from the default (same pattern as the
+                   ws chip's +N). The popover shows the FULL settings surface,
+                   labeled — nothing hidden behind icon-only affordances. -->
+              <button class="st-btn st-btn--secondary" id="h-settings"
                       title="Approvals, preset and plugins for this session" aria-haspopup="dialog" aria-expanded="false">
-                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
-                <span id="h-settings-summary">ask every time</span></button>
+                Settings<span class="st-badge st-badge--reading" id="h-settings-badge" hidden></span></button>
               <span id="h-settings-cluster" hidden>
                 <label class="muted small" for="h-policy">approvals</label>
                 <select class="st-input" id="h-policy">
@@ -236,10 +237,12 @@
                        aria-label="Approval allowlist patterns, comma-separated" hidden>
                 <label class="muted small" for="h-preset">preset</label>
                 <select class="st-input" id="h-preset" aria-label="Agent preset for new sessions" title="Applies to new sessions; fork to change a running one"></select>
-                <button class="st-btn st-btn--icon" id="h-preset-manage" title="Manage presets" aria-label="Manage presets" aria-haspopup="true">
-                  <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg></button>
-                <button class="st-btn st-btn--icon" id="h-plugin-manage" title="Manage plugins" aria-label="Manage plugins" aria-haspopup="true" hidden>
-                  <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg><span class="harness-plugin-dot" id="h-plugin-dot" aria-hidden="true" hidden></span></button>
+                <!-- labeled text buttons: an icon-only gear under a select reads
+                     as decoration, not an action (UX review) -->
+                <span></span>
+                <button class="st-btn st-btn--secondary harness-manage-btn" id="h-preset-manage" aria-haspopup="true">Manage presets…</button>
+                <button class="st-btn st-btn--secondary harness-manage-btn" id="h-plugin-manage" aria-haspopup="true" hidden>
+                  Manage plugins…<span class="harness-plugin-dot" id="h-plugin-dot" aria-hidden="true" hidden></span></button>
               </span>
             </span>
             <span class="harness-bar__group">

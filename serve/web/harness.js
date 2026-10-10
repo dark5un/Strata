@@ -1503,11 +1503,21 @@ function closeSettingsPopover() {
   $("h-settings").setAttribute("aria-expanded", "false");
 }
 $("h-settings").onclick = settingsPopover;
-// the button carries the live state so the setting is readable without opening
+// the bar button stays a plain "Settings" (uniform with the other actions);
+// a badge appears ONLY when something deviates from the defaults — state you
+// must notice, silence when there is nothing to notice
 function settingsSummary() {
   const mode = $("h-policy").value;
   const preset = $("h-preset").value || "default";
-  $("h-settings-summary").textContent = `${mode === "ask" ? "ask every time" : mode} · ${preset}`;
+  const badge = $("h-settings-badge");
+  const parts = [];
+  if (mode !== "ask") parts.push(mode);
+  if (preset !== "default") parts.push(preset);
+  badge.hidden = parts.length === 0;
+  badge.textContent = parts.join(" · ");
+  $("h-settings").title = parts.length
+    ? `Settings — currently: ${mode} · ${preset}`
+    : "Approvals, preset and plugins for this session";
 }
 
 // approval policy: ask | never | allowlist | yolo (patterns ride the store;

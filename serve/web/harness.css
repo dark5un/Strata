@@ -192,10 +192,8 @@
 .harness-settings-pop { min-width: 340px; max-width: 460px; }
 .harness-settings-grid { display: grid; grid-template-columns: auto 1fr; gap: var(--st-s-2); align-items: center; }
 .harness-settings-grid .st-input { width: 100%; }
-/* manage buttons belong under the control column, not the label column */
-.harness-settings-grid #h-preset-manage, .harness-settings-grid #h-plugin-manage { grid-column: 2; justify-self: start; }
-.harness-settings-btn { gap: var(--st-s-2); }
-.harness-settings-btn #h-settings-summary { font-weight: 500; color: var(--st-ink-soft); }
+/* manage actions belong under the control column, as labeled buttons */
+.harness-manage-btn { grid-column: 2; justify-self: start; position: relative; }
 /* session delete (M10): revealed on hover/focus of the row, danger-toned;
    always visible on touch (no hover) via (hover: none) */
 .harness-session .harness-session-del { flex: none; opacity: 0; }
