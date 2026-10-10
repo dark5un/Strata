@@ -217,21 +217,30 @@
               <span id="h-ws-label">workspace</span><span class="st-badge st-badge--reading" id="h-ws-count" hidden></span>
             </button>
             <span class="harness-bar__group">
-              <label class="muted small" for="h-policy">approvals</label>
-              <select class="st-input" id="h-policy">
-                <option value="ask">ask every time</option>
-                <option value="never">never (deny unless allowlisted)</option>
-                <option value="allowlist">allowlist</option>
-                <option value="yolo">yolo (auto-allow, logged)</option>
-              </select>
-              <input class="st-input" id="h-allowlist" placeholder="patterns: shell:echo*, write_file"
-                     aria-label="Approval allowlist patterns, comma-separated" hidden>
-              <label class="muted small" for="h-preset">preset</label>
-              <select class="st-input" id="h-preset" aria-label="Agent preset for new sessions" title="Applies to new sessions; fork to change a running one"></select>
-              <button class="st-btn st-btn--icon" id="h-preset-manage" title="Manage presets" aria-label="Manage presets" aria-haspopup="true">
-                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg></button>
-              <button class="st-btn st-btn--icon" id="h-plugin-manage" title="Manage plugins" aria-label="Manage plugins" aria-haspopup="true" hidden>
-                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg><span class="harness-plugin-dot" id="h-plugin-dot" aria-hidden="true" hidden></span></button>
+              <!-- M10 UX (crowding relief): the settings cluster lives behind one
+                   Settings button; the nodes move into the popover on open and
+                   back on close, so every existing handler stays bound. -->
+              <button class="st-btn st-btn--secondary harness-settings-btn" id="h-settings"
+                      title="Approvals, preset and plugins for this session" aria-haspopup="dialog" aria-expanded="false">
+                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
+                <span id="h-settings-summary">ask every time</span></button>
+              <span id="h-settings-cluster" hidden>
+                <label class="muted small" for="h-policy">approvals</label>
+                <select class="st-input" id="h-policy">
+                  <option value="ask">ask every time</option>
+                  <option value="never">never (deny unless allowlisted)</option>
+                  <option value="allowlist">allowlist</option>
+                  <option value="yolo">yolo (auto-allow, logged)</option>
+                </select>
+                <input class="st-input" id="h-allowlist" placeholder="patterns: shell:echo*, write_file"
+                       aria-label="Approval allowlist patterns, comma-separated" hidden>
+                <label class="muted small" for="h-preset">preset</label>
+                <select class="st-input" id="h-preset" aria-label="Agent preset for new sessions" title="Applies to new sessions; fork to change a running one"></select>
+                <button class="st-btn st-btn--icon" id="h-preset-manage" title="Manage presets" aria-label="Manage presets" aria-haspopup="true">
+                  <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg></button>
+                <button class="st-btn st-btn--icon" id="h-plugin-manage" title="Manage plugins" aria-label="Manage plugins" aria-haspopup="true" hidden>
+                  <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg><span class="harness-plugin-dot" id="h-plugin-dot" aria-hidden="true" hidden></span></button>
+              </span>
             </span>
             <span class="harness-bar__group">
               <button class="st-btn st-btn--secondary" id="h-export" title="Export this session (Markdown or raw JSONL)" aria-haspopup="true">Export</button>

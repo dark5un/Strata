@@ -39,6 +39,56 @@ async function hpost(path, body) {
   return j;
 }
 
+// ------------------------------------------------------------------ popover stacking (UX review)
+// A popover must visibly OWN the screen: everything behind it dims, and a
+// dialog opened over a dialog dims the dialog below it. Focus is shown, not
+// implied. mountPopover arms a scrim under each popover and tracks depth;
+// unmountPopover retires the scrim when its popover closes.
+let POP_STACK = 0;
+function mountPopover(pop) {
+  POP_STACK += 1;
+  pop.dataset.stack = String(POP_STACK);
+  pop.style.zIndex = String(29 + POP_STACK * 2);
+  const scrim = document.createElement("div");
+  scrim.className = "harness-scrim";
+  scrim.dataset.stack = String(POP_STACK);
+  scrim.style.zIndex = String(28 + POP_STACK * 2);
+  scrim.onclick = () => closeTopPopover();
+  $("h-bar").appendChild(scrim);
+  $("h-bar").appendChild(pop);   // the scrim first, the popover above it
+  return pop;
+}
+function unmountPopover(pop) {
+  const stack = parseInt(pop.dataset.stack || "0", 10);
+  if (!stack) return;
+  document.querySelectorAll(`.harness-scrim[data-stack="${stack}"]`).forEach((s) => s.remove());
+  if (POP_STACK >= stack) POP_STACK = stack - 1;
+}
+// close the topmost popover (scrim click / global Escape): find the live pop
+// with the highest stack and run its own close path via a synthetic Escape,
+// so each popover keeps its focus-return behaviour.
+function closeTopPopover() {
+  const pops = [...document.querySelectorAll("#h-bar [data-stack]")];
+  if (!pops.length) return;
+  pops.sort((a, b) => (parseInt(a.dataset.stack, 10) - parseInt(b.dataset.stack, 10)));
+  const top = pops[pops.length - 1];
+  // the popover's own Escape path runs on this synthetic event and bubbles
+  // back here; the flag stops the document listener from cascading the close
+  // into the popover BELOW (one scrim click = one popover closes)
+  closingTop = true;
+  try { top.dispatchEvent(new window.KeyboardEvent("keydown", {key: "Escape", bubbles: true})); }
+  finally { closingTop = false; }
+}
+let closingTop = false;
+document.addEventListener("keydown", (e) => {
+  if (closingTop) return;
+  if (e.key === "Escape" && document.querySelector("#h-bar .harness-scrim")) {
+    const focused = document.activeElement;
+    if (focused && focused.closest && focused.closest("#h-bar [data-stack]")) return;  // popover handles its own
+    closeTopPopover();
+  }
+});
+
 // ------------------------------------------------------------------ sessions
 async function loadSessions() {
   try {
@@ -55,8 +105,11 @@ async function loadSessions() {
   const box = $("h-session-list");
   box.innerHTML = "";
   for (const s of H.sessions) {
-    const row = document.createElement("button");
-    row.type = "button";
+    // role=button div (not <button>): the row hosts a nested delete button,
+    // which invalid-HTML would otherwise swallow (M10)
+    const row = document.createElement("div");
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
     row.className = "harness-session" + (s.id === H.sid ? " is-active" : "") + (s.origin === "subagent" ? " is-sub" : "");
     row.dataset.sid = s.id;
     row.title = `${s.id} · ${s.error ? "unreadable" : `${s.events} events`}`;
@@ -66,11 +119,55 @@ async function loadSessions() {
       (s.origin === "subagent" ? `<span class="st-badge st-badge--reading" title="subagent of ${esc(s.parent || "")}">sub</span>` : "") +
       (s.preset && s.preset !== "default" ? `<span class="st-badge st-badge--reading" title="preset">${esc(s.preset)}</span>` : "") +
       (s.roots && s.roots.length ? `<span class="st-badge st-badge--reading harness-ws-badge" title="${esc(s.roots.join("\n"))}">${esc(wsShortName(s.roots[0]))}${s.roots.length > 1 ? ` +${s.roots.length - 1}` : ""}</span>` : "") +
-      (s.busy ? `<span class="st-badge st-badge--generating">running</span>` : "");
+      (s.busy ? `<span class="st-badge st-badge--generating">running</span>` : "") +
+      `<button class="st-btn st-btn--icon harness-session-del" title="Delete session" aria-label="Delete ${esc(s.title || s.id)}">` +
+      `${icon("trash", "st-icon st-icon--sm")}</button>`;
     row.onclick = () => openSession(s.id);
+    row.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSession(s.id); }
+    };
+    const del = row.querySelector(".harness-session-del");
+    del.onclick = (e) => { e.stopPropagation(); confirmDeleteSession(row, del, s); };
     box.appendChild(row);
   }
   if (!H.sessions.length) box.innerHTML = `<p class="muted small">No sessions yet — start one.</p>`;
+}
+
+// session delete (M10): destructive, so two-step inline confirm — the trash
+// becomes Delete/Keep in place. No native confirm() (off-system, the goal
+// popover set the precedent). The log IS the session (ADR-0004): deleting
+// removes the JSONL; children keep their logs and just lose the pointer.
+function confirmDeleteSession(row, del, s) {
+  if (row.dataset.confirming) return;
+  row.dataset.confirming = "1";
+  row.classList.add("is-confirming");
+  del.hidden = true;
+  const acts = document.createElement("span");
+  acts.className = "harness-session-del-acts";
+  acts.innerHTML = `<button class="st-btn st-btn--danger harness-session-yes">Delete</button>` +
+    `<button class="st-btn st-btn--secondary harness-session-keep">Keep</button>`;
+  row.appendChild(acts);
+  const yes = acts.querySelector(".harness-session-yes");
+  yes.focus();
+  const undo = () => { delete row.dataset.confirming; row.classList.remove("is-confirming"); acts.remove(); del.hidden = false; };
+  acts.querySelector(".harness-session-keep").onclick = (e) => { e.stopPropagation(); undo(); };
+  row.addEventListener("mouseleave", () => { if (row.dataset.confirming && !row.contains(document.activeElement)) undo(); });
+  yes.onclick = async (e) => {
+    e.stopPropagation();
+    try {
+      await hpost(`harness/session/${s.id}/delete`, {});
+      toast("success", "Session deleted", s.title || s.id);
+      if (H.sid === s.id) {
+        H.sid = null;
+        if (H.abort) H.abort.abort();
+        $("h-transcript").innerHTML = "";
+        composerEnabled(false);
+        store.set("harness.session", null);
+      }
+      await loadSessions();
+      if (H.sessions.length && !H.sid) openSession(H.sessions[0].id);
+    } catch (err) { toast("error", "Delete session", err.message); undo(); }
+  };
 }
 
 // keyboard nav for the session list (M4 UX): arrows move focus, Enter opens
@@ -137,7 +234,7 @@ function setWsChip() {
 
 function closeWsPop() {
   const pop = document.getElementById("h-ws-pop");
-  if (pop) pop.remove();
+  if (pop) { unmountPopover(pop); pop.remove(); }
   $("h-ws").setAttribute("aria-expanded", "false");
 }
 
@@ -204,7 +301,7 @@ async function wsPopover() {
           <button class="st-btn st-btn--secondary" id="h-ws-fork" title="Fork, narrowing the folders if you like">Fork with different folders…</button>
           <button class="st-btn st-btn--secondary" id="h-ws-new" title="Start a new session with these same folders">New session with these folders</button>
         </div>`);
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   $("h-ws").setAttribute("aria-expanded", "true");
   $("h-ws-close").onclick = () => { closeWsPop(); $("h-ws").focus(); };
   pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeWsPop(); $("h-ws").focus(); } });
@@ -272,7 +369,7 @@ async function loadPresets() {
     if (presets.some((p) => p.name === saved)) sel.value = saved;
   } catch { /* the select stays empty: sessions still start with default */ }
 }
-$("h-preset").onchange = () => store.set("harness.preset", $("h-preset").value);
+$("h-preset").onchange = () => { store.set("harness.preset", $("h-preset").value); settingsSummary(); };
 
 // ------------------------------------------------------------------ preset manage panel (M7 D9 / ADR-0011)
 let PRESET_TOOLS = [];
@@ -290,7 +387,7 @@ async function presetManage() {
     `<div id="h-preset-rows"><p class="muted small">loading…</p></div>` +
     `<p class="muted small">Presets apply to new sessions; fork to change a running one. ` +
     `Bundled presets stay read-only — editing copies them to your presets.</p>`;
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   $("h-preset-close").onclick = () => { closePresetManage(); $("h-preset-manage").focus(); };
   $("h-preset-new").onclick = () => presetEditor(null);
   pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePresetManage(); $("h-preset-manage").focus(); } });
@@ -344,7 +441,7 @@ async function presetManage() {
 }
 function closePresetManage() {
   const pop = document.getElementById("h-preset-pop");
-  if (pop) pop.remove();
+  if (pop) { unmountPopover(pop); pop.remove(); }
 }
 $("h-preset-manage").onclick = presetManage;
 
@@ -373,7 +470,7 @@ async function pluginBadge() {
 }
 function closePluginManage() {
   const pop = document.getElementById("h-plugin-pop");
-  if (pop) pop.remove();
+  if (pop) { unmountPopover(pop); pop.remove(); }
 }
 async function pluginManage() {
   closePresetManage();
@@ -390,7 +487,7 @@ async function pluginManage() {
     `<p class="muted small">Plugins are code. Review the source before approving — ` +
     `a plugin loads only after you approve its exact bytes, and writes to the plugin ` +
     `folder always ask, even in yolo.</p>`;
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   $("h-plugin-close").onclick = () => { closePluginManage(); $("h-plugin-manage").focus(); };
   pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePluginManage(); $("h-plugin-manage").focus(); } });
   try {
@@ -469,7 +566,7 @@ async function pluginSource(name) {
     `<span class="card-title">Plugin <code class="inline">${esc(name)}</code></span>` +
     `<button class="st-btn st-btn--icon" id="h-plugin-close" title="Close" aria-label="Close">✕</button></div>` +
     `<div id="h-plugin-src"><p class="muted small">loading…</p></div>`;
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   $("h-plugin-close").onclick = () => { closePluginManage(); $("h-plugin-manage").focus(); };
   pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePluginManage(); $("h-plugin-manage").focus(); } });
   try {
@@ -509,7 +606,7 @@ function presetEditor(preset) {
     `<div class="harness-popover__actions">` +
     `<button class="st-btn st-btn--primary" id="h-pe-save">Save</button>` +
     `<button class="st-btn st-btn--secondary" id="h-pe-cancel">Cancel</button></div>`;
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   const box = $("h-pe-tools");
   for (const t of PRESET_TOOLS) {
     const lab = document.createElement("label");
@@ -525,7 +622,7 @@ function presetEditor(preset) {
     const other = box.querySelector(`input[data-t="${cb.dataset.t}"][data-k="${cb.dataset.k === "allow" ? "deny" : "allow"}"]`);
     if (cb.checked && other) other.checked = false;
   });
-  $("h-pe-cancel").onclick = () => { pop.remove(); presetManage(); };
+  $("h-pe-cancel").onclick = () => { unmountPopover(pop); pop.remove(); presetManage(); };
   $("h-pe-save").onclick = async () => {
     const name = $("h-pe-name").value.trim();
     const a = new Set(), dn = new Set();
@@ -534,6 +631,7 @@ function presetEditor(preset) {
       await hpost("harness/presets", {name, description: $("h-pe-desc").value.trim() || null,
                                       persona: $("h-pe-persona").value.trim() || null,
                                       tools: {allow: [...a], deny: [...dn]}});
+      unmountPopover(pop);
       pop.remove();
       await loadPresets();
       presetManage();
@@ -555,7 +653,7 @@ function exportPopover() {
     `<button class="st-btn st-btn--primary" id="h-export-md">Markdown</button>` +
     `<button class="st-btn st-btn--secondary" id="h-export-jsonl">JSONL</button></div>` +
     `<p class="muted small">JSONL includes raw tool output — treat it as sensitive.</p>`;
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   $("h-export-md").focus();
   $("h-export-md").onclick = () => downloadExport("markdown");
   $("h-export-jsonl").onclick = () => downloadExport("jsonl");
@@ -563,7 +661,7 @@ function exportPopover() {
 }
 function closeExportPopover() {
   const pop = document.getElementById("h-export-pop");
-  if (pop) pop.remove();
+  if (pop) { unmountPopover(pop); pop.remove(); }
 }
 function downloadExport(fmt) {
   // fetch (not a bare <a>): the route is API-key gated and <a> sends no header
@@ -604,6 +702,7 @@ function openSession(sid) {
   setPlanChip(false); setGoalChip(null, "");   // no stale chips between sessions
   setBusy(false);
   $("h-policy").value = "ask"; $("h-allowlist").hidden = true; setYoloBanner(false);
+  settingsSummary();
   $("h-transcript").innerHTML = `<p class="muted">Loading session ${esc(sid)}&hellip;</p>`;
   loadSessions();
   startStream();
@@ -1165,7 +1264,7 @@ function composerEnabled(on) {
   // pill already shows the server state, don't duplicate it in the empty tab
   $("h-state").hidden = !on && !H.busy;
   // the whole session-scoped bar is honest about the empty state (UX review)
-  for (const id of ["h-plan", "h-goal", "h-fork", "h-policy", "h-allowlist", "h-export", "h-preset-manage"]) $(id).disabled = !on;
+  for (const id of ["h-plan", "h-goal", "h-fork", "h-settings", "h-export"]) $(id).disabled = !on;
 }
 
 // plan / goal mode chips + buttons (ADR-0007). State is tracked in H (not read
@@ -1209,7 +1308,7 @@ function goalPopover() {
     `<button class="st-btn st-btn--primary" id="h-goal-save">Start goal</button>` +
     `<button class="st-btn st-btn--secondary" id="h-goal-pause">Pause active goal</button>` +
     `<button class="st-btn st-btn--icon" id="h-goal-close" title="Close" aria-label="Close">✕</button></div>`;
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   const input = $("h-goal-input");
   input.focus();
   const submit = async (body) => {
@@ -1230,7 +1329,7 @@ function goalPopover() {
 }
 function closeGoalPopover() {
   const pop = document.getElementById("h-goal-pop");
-  if (pop) pop.remove();
+  if (pop) { unmountPopover(pop); pop.remove(); }
 }
 $("h-goal").onclick = () => { if (H.sid) goalPopover(); };
 
@@ -1306,7 +1405,7 @@ function forkPopover() {
     `<div class="harness-popover__actions">` +
     `<button class="st-btn st-btn--primary" id="h-fork-go">Fork</button>` +
     `<button class="st-btn st-btn--secondary" id="h-fork-asis">Fork as-is</button></div>`;
-  $("h-bar").appendChild(pop);
+  mountPopover(pop);
   const close = () => { closeForkPopover(); $("h-fork").focus(); };
   $("h-fork-close").onclick = close;
   pop.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
@@ -1366,15 +1465,57 @@ function forkPopover() {
 }
 function closeForkPopover() {
   const pop = document.getElementById("h-fork-pop");
-  if (pop) pop.remove();
+  if (pop) { unmountPopover(pop); pop.remove(); }
 }
 $("h-fork").onclick = () => { if (H.sid) forkPopover(); };
+
+// settings popover (M10 crowding relief): the approvals/preset/plugins cluster
+// moves INTO the popover on open and back into its bar slot on close. The
+// nodes keep their identity, so every existing handler (policy change, preset
+// change, manage buttons) stays bound — no re-wiring, no duplicated controls.
+function settingsPopover() {
+  closeSettingsPopover();
+  const pop = document.createElement("div");
+  pop.id = "h-settings-pop";
+  pop.className = "st-card harness-popover harness-settings-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Session settings");
+  pop.innerHTML = `<div class="harness-popover__actions"><span class="card-title">Settings</span>` +
+    `<button class="st-btn st-btn--icon" id="h-settings-close" title="Close" aria-label="Close">✕</button></div>` +
+    `<div class="harness-settings-grid" id="h-settings-grid"></div>`;
+  mountPopover(pop);
+  const cluster = $("h-settings-cluster");
+  const grid = $("h-settings-grid");
+  while (cluster.firstChild) grid.appendChild(cluster.firstChild);
+  cluster.hidden = true;
+  $("h-settings").setAttribute("aria-expanded", "true");
+  $("h-settings-close").onclick = () => { closeSettingsPopover(); $("h-settings").focus(); };
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeSettingsPopover(); $("h-settings").focus(); } });
+}
+function closeSettingsPopover() {
+  const pop = document.getElementById("h-settings-pop");
+  if (!pop) return;
+  const cluster = $("h-settings-cluster");
+  const grid = $("h-settings-grid");
+  while (grid.firstChild) cluster.appendChild(grid.firstChild);
+  unmountPopover(pop);
+  pop.remove();
+  $("h-settings").setAttribute("aria-expanded", "false");
+}
+$("h-settings").onclick = settingsPopover;
+// the button carries the live state so the setting is readable without opening
+function settingsSummary() {
+  const mode = $("h-policy").value;
+  const preset = $("h-preset").value || "default";
+  $("h-settings-summary").textContent = `${mode === "ask" ? "ask every time" : mode} · ${preset}`;
+}
 
 // approval policy: ask | never | allowlist | yolo (patterns ride the store;
 // the MODE never does — yolo is per-session and never restored, ADR-0010)
 $("h-policy").onchange = () => {
   $("h-allowlist").hidden = $("h-policy").value !== "allowlist";
   setYoloBanner($("h-policy").value === "yolo");
+  settingsSummary();
   savePolicy();
 };
 $("h-allowlist").onchange = savePolicy;
@@ -1434,6 +1575,7 @@ async function savePolicy() {
   pluginBadge();
   await loadSessions();
   setWsChip();                             // M9: the chip starts honest (no session = server default)
+  settingsSummary();                       // M10: the Settings button carries the live state
   const saved = store.get("harness.session", null);
   if (saved && H.sessions.some((s) => s.id === saved)) openSession(saved);
   else if (H.sessions.length) openSession(H.sessions[0].id);

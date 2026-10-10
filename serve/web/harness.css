@@ -92,6 +92,14 @@
 
 .harness-popover { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
   display: flex; flex-direction: column; gap: var(--st-s-2); padding: var(--st-s-3); min-width: 260px; }
+/* popover focus (UX review): a dialog must visibly own the screen — everything
+   behind it dims, including a dialog it was opened over. mountPopover arms one
+   scrim per popover; the stack depth sets z-index so the top dialog stays lit. */
+.harness-scrim { position: fixed; inset: 0; z-index: 28; background: rgba(4, 7, 9, .55); }
+@media (prefers-reduced-motion: no-preference) {
+  .harness-scrim { animation: harness-scrim-in 140ms var(--st-ease, ease-out); }
+}
+@keyframes harness-scrim-in { from { opacity: 0; } }
 .harness-popover__actions { display: flex; gap: var(--st-s-2); align-items: center; }
 /* preset manage panel (M7 D7): rows + the editor form over the YAML schema */
 .harness-preset-pop { min-width: 340px; max-width: 420px; }
@@ -171,6 +179,22 @@
 }
 
 /* ---- workspaces (M9 / ADR-0015) ---- */
+/* settings popover (M10 crowding relief): the bar's settings cluster moves in
+   and out; the grid lays the moved nodes out two-per-row */
+.harness-settings-pop { min-width: 340px; max-width: 460px; }
+.harness-settings-grid { display: grid; grid-template-columns: auto 1fr; gap: var(--st-s-2); align-items: center; }
+.harness-settings-grid .st-input { width: 100%; }
+.harness-settings-btn { gap: var(--st-s-2); }
+.harness-settings-btn #h-settings-summary { font-weight: 500; color: var(--st-ink-soft); }
+/* session delete (M10): revealed on hover/focus of the row, danger-toned;
+   always visible on touch (no hover) via (hover: none) */
+.harness-session .harness-session-del { flex: none; opacity: 0; }
+.harness-session:hover .harness-session-del,
+.harness-session:focus-within .harness-session-del { opacity: 1; }
+.harness-session-del:hover { color: var(--st-danger-text); }
+.harness-session-del-acts { display: inline-flex; gap: var(--st-s-1); flex: none; }
+.harness-session-del-acts .st-btn { height: 30px; padding: 0 10px; font-size: var(--st-fs-sm); }
+@media (hover: none) { .harness-session .harness-session-del { opacity: 1; } }
 .harness-ws-chip { display: inline-flex; align-items: center; gap: var(--st-s-1);
   max-width: 220px; }
 /* frozen-roots lock glyph: shown only while a live session is open (setWsChip) */

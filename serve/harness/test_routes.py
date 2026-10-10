@@ -171,6 +171,19 @@ class SessionCommandTests(RoutesBase):
                             {"content": "x", "target": "nowhere"})
         self.assertEqual(code, 400)
 
+    def test_delete_session(self):
+        # M10: the log IS the session (ADR-0004): delete removes the JSONL,
+        # the list row disappears, and an unknown id is 404.
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        code, body = self.post(f"/harness/session/{sid}/delete", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["deleted"])
+        _, listing = self.get("/harness/sessions")
+        self.assertNotIn(sid, [s["id"] for s in listing["sessions"]])
+        code, _ = self.post(f"/harness/session/{sid}/delete", {})
+        self.assertEqual(code, 404)
+
     def test_fork_and_cancel_and_policy(self):
         _, created = self.post("/harness/session", {})
         sid = created["id"]

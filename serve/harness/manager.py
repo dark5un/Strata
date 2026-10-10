@@ -441,6 +441,22 @@ class HarnessManager:
             self.cancel(child_sid)
         return True
 
+    def delete(self, session_id: str) -> bool:
+        """Delete a session: cancel any running turn, drop the live handle,
+        remove the JSONL log. The log is the whole truth (ADR-0004), so
+        removing it IS the delete — no tombstone. Children keep their own
+        logs; their parent pointer simply stops resolving (the list row
+        already tolerates an unreadable parent). Spill files are content-
+        addressed and shared across sessions: never touched here."""
+        self.cancel(session_id)
+        with self._lock:
+            live = self._live.pop(session_id, None)
+        path = self.dir / f"{session_id}.jsonl"
+        if live is None and not path.exists():
+            raise FileNotFoundError(session_id)
+        path.unlink(missing_ok=True)
+        return True
+
     # ---------------------------------------------------------------- subagents (ADR-0008)
 
     def spawn_child(self, parent_id: str, task: str, preset: str) -> tuple[str | None, str | None]:

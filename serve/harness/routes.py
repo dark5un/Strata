@@ -382,6 +382,11 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
                 handler._json(200, {"id": mgr.fork(sid, boundary, roots=roots)})
             elif action == "cancel":
                 handler._json(200, {"cancelled": mgr.cancel(sid)})
+            elif action == "delete":
+                # destructive: the JSONL log IS the session (ADR-0004); the UI
+                # confirms before posting. 404 for an unknown id (FileNotFoundError
+                # is folded below).
+                handler._json(200, {"deleted": mgr.delete(sid)})
             elif action == "answer":
                 qid = req.get("qid")
                 answer = req.get("answer")
