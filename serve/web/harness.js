@@ -683,6 +683,125 @@ function downloadExport(fmt) {
 }
 $("h-export").onclick = () => { if (H.sid) exportPopover(); };
 
+// ------------------------------------------------------- stats drawer (M11a, ADR-0017)
+// Read + render only: the numbers come from GET /harness/session/stats (the
+// server-side fold, ADR-0017) — never re-derived here. The drawer renders on
+// open and re-renders when a turn/end lands while it is open (paint() hooks
+// it): one pump, two consumers, no second poll loop.
+const STATS_CAP = 50;      // turns rendered before "show all" (the sparkline always covers all)
+
+function statsPopover() {
+  closeStatsPopover();
+  const pop = document.createElement("div");
+  pop.id = "h-stats-pop";
+  pop.className = "st-card harness-popover harness-stats";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Session stats");
+  pop.innerHTML = `<p class="muted small">Loading stats&hellip;</p>`;
+  mountPopover(pop);
+  $("h-stats").setAttribute("aria-expanded", "true");
+  H.statsAll = false;
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeStatsPopover(); $("h-stats").focus(); } });
+  statsRender();
+}
+function closeStatsPopover() {
+  const pop = document.getElementById("h-stats-pop");
+  if (pop) { unmountPopover(pop); pop.remove(); }
+  $("h-stats").setAttribute("aria-expanded", "false");
+}
+function statsTick() {                       // paint()'s turn/end hook: refresh only if open
+  if (document.getElementById("h-stats-pop")) statsRender();
+}
+async function statsRender() {
+  const pop = document.getElementById("h-stats-pop");
+  if (!pop || !H.sid) return;
+  const sid = H.sid;
+  let st;
+  try { st = await hget(`harness/session/stats?session=${encodeURIComponent(sid)}`); }
+  catch (e) { if (pop.isConnected) pop.innerHTML = `<p class="muted small">stats failed: ${esc(e.message)}</p>`; return; }
+  if (!pop.isConnected || H.sid !== sid) return;   // session switched / popover closed mid-fetch
+  pop.innerHTML = statsNowHtml(st) + statsTurnsHtml(st) + statsTotalsHtml(st);
+  const more = document.getElementById("h-stats-more");
+  if (more) more.onclick = () => { H.statsAll = !H.statsAll; statsRender(); };
+}
+function statsNowHtml(st) {
+  // silence at defaults (ADR-0016 §2): the row only earns its place when the
+  // session is live or something is pending — the transcript says idle.
+  const t = st.turns[st.turns.length - 1];
+  const open = t && t.open;
+  const pendingTools = open ? t.tools.pending : 0;
+  if (!H.busy && !pendingTools && !st.children.length) return "";
+  const bits = [];
+  if (H.busy) bits.push(`<span class="st-badge st-badge--generating">working</span>`);
+  if (pendingTools) bits.push(`<span class="muted small">${pendingTools} tool${pendingTools > 1 ? "s" : ""} in flight</span>`);
+  if (st.totals.lastStepMs != null) bits.push(`<span class="muted small">last step ${fmt(st.totals.lastStepMs)} ms</span>`);
+  if (st.children.length) bits.push(`<span class="muted small">${st.children.length} subagent${st.children.length > 1 ? "s" : ""}</span>`);
+  return `<div class="harness-stats__now">${bits.join("")}</div>`;
+}
+const STATS_REASON = {completed: "completed", aborted: "cancelled", error: "error",
+                      blocked: "blocked", "max-tokens": "token limit", interrupted: "interrupted", forked: "forked"};
+function statsTurnsHtml(st) {
+  if (!st.turns.length) return `<span class="card-title">Turns</span><p class="muted small">No turns yet.</p>`;
+  const all = st.turns;
+  const shown = (H.statsAll || all.length <= STATS_CAP) ? all : all.slice(-STATS_CAP);
+  const rows = shown.map((t) => {
+    const tools = t.tools.ok + t.tools.error + t.tools.unknown + t.tools.pending;
+    const bits = [`${t.steps} step${t.steps === 1 ? "" : "s"}`];
+    if (tools) {
+      const tb = [t.tools.ok && `${t.tools.ok} ok`, t.tools.error && `${t.tools.error} error`,
+                  t.tools.unknown && `${t.tools.unknown} unknown`, t.tools.pending && `${t.tools.pending} running`].filter(Boolean).join(" · ");
+      bits.push(`${tools} tool${tools === 1 ? "" : "s"} (${tb})`);
+    }
+    const ap = t.approvals;
+    if (ap.asked) bits.push(`${ap.asked} asked · ${ap.allowed} allowed · ${ap.denied} denied${ap.cancelled ? ` · ${ap.cancelled} cancelled` : ""}`);
+    if (ap.auto) bits.push(`${ap.auto} auto`);
+    if (t.ms != null) bits.push(`${fmt(t.ms / 1000, 1)}s`);
+    const badge = t.open ? `<span class="st-badge st-badge--queued">running</span>`
+      : `<span class="st-badge st-badge--${t.reason === "completed" ? "reading" : "error"}">${esc(STATS_REASON[t.reason] || t.reason || "?")}</span>`;
+    const ctx = t.ctxPct == null ? "" : `<span class="harness-stats__ctx" title="context at end of turn (same number as the pill)">${fmt(t.ctxPct, 1)}%</span>`;
+    const comp = t.compaction ? `<span class="muted small"> · compaction</span>` : "";
+    const expand = t.toolNames.length
+      ? `<details class="harness-stats__tools"><summary class="muted small">${t.toolNames.length} tool call${t.toolNames.length === 1 ? "" : "s"}</summary>` +
+        `<ul>${t.toolNames.map((e) => `<li><span>${esc(e.name)}</span>` +
+          `<span class="st-badge st-badge--${e.outcome === "ok" ? "reading" : e.outcome === "pending" ? "queued" : "error"}">${esc(e.outcome)}</span>` +
+          (e.spill ? `<span class="muted small">spilled</span>` : "") + `</li>`).join("")}</ul></details>`
+      : "";
+    return `<li class="harness-stats__turn"><div class="harness-stats__turnrow">` +
+      `<span class="harness-stats__n">#${t.n}</span>${badge}<span class="muted small">${bits.join(" · ")}${comp}</span>${ctx}</div>${expand}</li>`;
+  }).join("");
+  const more = all.length > STATS_CAP
+    ? `<button class="st-btn st-btn--secondary" id="h-stats-more">${H.statsAll ? "Show fewer" : `Show all ${all.length} turns`}</button>` : "";
+  return `<span class="card-title">Turns</span><ol class="harness-stats__turns">${rows}</ol>` +
+    statsSparkline(all) + more;
+}
+function statsSparkline(turns) {
+  // context curve: one polyline of ctx% per turn, compaction turns get a tick.
+  // Inline SVG only (ADR-0005: no chart library). Cheap enough to cover all turns.
+  const pts = turns.map((t) => t.ctxPct).filter((v) => v != null);
+  if (pts.length < 2) return "";
+  const w = 520, h = 48, max = Math.max(100, ...pts);
+  const x = (i) => (i / (pts.length - 1)) * (w - 8) + 4;
+  const y = (v) => h - 4 - (v / max) * (h - 8);
+  const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const ticks = turns.map((t, i) => t.compaction ? `<line x1="${x(i).toFixed(1)}" y1="2" x2="${x(i).toFixed(1)}" y2="${h - 2}" class="harness-stats__tick"/>` : "").join("");
+  const label = `context ${Math.min(...pts).toFixed(0)}% to ${Math.max(...pts).toFixed(0)}%, now ${pts[pts.length - 1].toFixed(0)}%`;
+  return `<svg class="harness-stats__spark" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}">` +
+    `<polyline points="${line}"/>${ticks}</svg>`;
+}
+function statsTotalsHtml(st) {
+  const T = st.totals;
+  const ap = T.approvals;
+  const bits = [`${T.turns} turn${T.turns === 1 ? "" : "s"}`, `${T.steps} step${T.steps === 1 ? "" : "s"}`];
+  const tools = T.tools.ok + T.tools.error + T.tools.unknown + T.tools.pending;
+  if (tools) bits.push(`${tools} tool${tools === 1 ? "" : "s"} (${T.tools.ok} ok${T.tools.error ? `, ${T.tools.error} error` : ""}${T.tools.unknown ? `, ${T.tools.unknown} unknown` : ""}${T.tools.pending ? `, ${T.tools.pending} running` : ""})`);
+  if (ap.asked) bits.push(`${ap.allowed} allowed · ${ap.denied} denied${ap.cancelled ? ` · ${ap.cancelled} cancelled` : ""}`);
+  if (ap.auto) bits.push(`${ap.auto} auto`);
+  if (T.tokens.prompt || T.tokens.completion) bits.push(`${kfmt(T.tokens.prompt)} in / ${kfmt(T.tokens.completion)} out`);
+  if (T.ms) bits.push(`${fmt(T.ms / 1000, 1)}s total`);
+  return `<span class="card-title">Totals</span><p class="harness-stats__totals muted small">${bits.join(" · ")}</p>`;
+}
+$("h-stats").onclick = () => { if (H.sid) statsPopover(); };
+
 // ------------------------------------------------------------------ the stream
 function openSession(sid) {
   H.sid = sid;
@@ -699,6 +818,7 @@ function openSession(sid) {
   H.retryDelay = 1000;
   H.plan = false; H.goal = null;
   H.ctxEstimate = 0;                       // the pill re-arms from the meter fold on subscribe
+  closeStatsPopover();                     // M11a: never show the previous session's stats
   setPlanChip(false); setGoalChip(null, "");   // no stale chips between sessions
   setBusy(false);
   $("h-policy").value = "ask"; $("h-allowlist").hidden = true; setYoloBanner(false);
@@ -918,6 +1038,7 @@ function paint(row) {
   } else if (t === "turn/end") {
     provClear();                                       // a cancelled/errored turn clears provisional nodes
     H.busy = false; setBusy(false);
+    statsTick();                                       // M11a: the open stats drawer re-renders (one pump, two consumers)
     if (d.reason !== "completed")
       el("harness-note", `<span class="muted small">turn ${esc(d.reason)}${d.message ? `: ${esc(String(d.message)).slice(0, 200)}` : ""}</span>`);
   } else if (t === "plan/mode") {

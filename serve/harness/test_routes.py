@@ -314,6 +314,30 @@ class SessionCommandTests(RoutesBase):
         self.assertIsNotNone(ev["context"])
         self.assertGreater(ev["context"]["estimate"], 0)
 
+    def test_stats_route_folds_the_log(self):
+        # M11a (ADR-0017): GET /harness/session/stats folds turns/totals
+        import time
+        self.mgr.metrics_fn = lambda: {"engine": {"max_context": 1000}}
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        self.post(f"/harness/session/{sid}/message", {"content": "a task with words"})
+        for _ in range(200):
+            if not self.mgr.live(sid).busy:
+                break
+            time.sleep(0.02)
+        code, st = self.get(f"/harness/session/stats?session={sid}")
+        self.assertEqual(code, 200)
+        self.assertGreaterEqual(st["totals"]["turns"], 1)
+        t = st["turns"][-1]
+        self.assertFalse(t["open"])
+        self.assertEqual(t["reason"], "completed")
+        self.assertIsNotNone(t["ctxPct"])
+        self.assertEqual(st["children"], [])
+
+    def test_stats_route_bad_session(self):
+        code, _ = self.get("/harness/session/stats?session=nope")
+        self.assertEqual(code, 404)
+
     def test_session_roots_roundtrip_and_fork_narrowing(self):
         # M9: roots ride the create call, show in the list, and a fork may
         # narrow but never widen them.

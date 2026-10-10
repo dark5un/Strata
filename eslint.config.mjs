@@ -9,6 +9,7 @@ export default [
       globals: {
         // provided by app.js (the tab is lazy-loaded by loadHarness())
         $: "readonly", icon: "readonly", esc: "readonly", fmt: "readonly",
+        kfmt: "readonly",
         headers: "readonly", store: "readonly", toast: "readonly",
         lastMetrics: "readonly", markdown: "readonly", copyText: "readonly",
         // browser

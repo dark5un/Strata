@@ -214,6 +214,17 @@ def handle_get(handler, svc, path: str) -> None:
         handler._json(200, {"events": rows, "pending": pending, "last_seq": live.handle.last_seq,
                             "busy": live.busy, "policy": policy_json, "context": ctx})
         return
+    if rest == "session/stats":
+        # M11a (ADR-0017): the observability fold — read + render only.
+        sid = (query.get("session") or [""])[0]
+        try:
+            live = mgr.live(sid)
+        except FileNotFoundError:
+            _bad(handler, 404, f"no session {sid!r}")
+            return
+        from .stats import fold_stats
+        handler._json(200, fold_stats(live.handle.snapshot(), mgr.metrics_fn))
+        return
     if rest == "stream":
         _stream(handler, mgr, (query.get("session") or [""])[0])
         return

@@ -233,3 +233,22 @@
   .harness-ws-chip #h-ws-label { display: none; }
   .harness-ws-chip { max-width: none; }
 }
+
+/* ---- stats drawer (M11a, ADR-0017): a popover like every other bar dialog,
+   wider because its content is a table of turns, not a form ---- */
+.harness-stats { width: min(560px, calc(100vw - 32px)); max-height: min(70vh, 620px); overflow-y: auto; }
+.harness-stats .card-title { margin-top: var(--st-s-1); }
+.harness-stats__now { display: flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; }
+.harness-stats__turns { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--st-s-1); }
+.harness-stats__turnrow { display: flex; align-items: center; gap: var(--st-s-2); flex-wrap: wrap; }
+.harness-stats__n { font-variant-numeric: tabular-nums; color: var(--st-ink-muted); min-width: 2.2em; }
+.harness-stats__ctx { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--st-ink-soft); }
+.harness-stats__tools { margin: 0 0 0 2.2em; }
+.harness-stats__tools summary { cursor: pointer; }
+.harness-stats__tools ul { list-style: none; margin: var(--st-s-1) 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.harness-stats__tools li { display: flex; align-items: center; gap: var(--st-s-2); font-size: var(--st-fs-sm); }
+.harness-stats__spark { width: 100%; height: 48px; }
+.harness-stats__spark polyline { fill: none; stroke: var(--st-accent); stroke-width: 1.5; }
+.harness-stats__tick { stroke: var(--st-warn); stroke-width: 1; stroke-dasharray: 2 2; }
+.harness-stats__totals { margin: 0; }
+@media (max-width: 640px) { .harness-stats { width: calc(100vw - 24px); max-height: 80vh; } }
