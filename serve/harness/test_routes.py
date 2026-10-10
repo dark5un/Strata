@@ -338,6 +338,45 @@ class SessionCommandTests(RoutesBase):
         code, _ = self.get("/harness/session/stats?session=nope")
         self.assertEqual(code, 404)
 
+    def test_title_route_renames_the_session(self):
+        # ADR-0019 (/title): a user title row wins over the model's auto-title
+        import time
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        self.post(f"/harness/session/{sid}/message", {"content": "a task with words"})
+        for _ in range(200):
+            if not self.mgr.live(sid).busy:
+                break
+            time.sleep(0.02)
+        code, _ = self.post(f"/harness/session/{sid}/title", {"text": "my rename"})
+        self.assertEqual(code, 200)
+        _, sess = self.get("/harness/sessions")
+        row = next(s for s in sess["sessions"] if s["id"] == sid)
+        self.assertEqual(row["title"], "my rename")
+        code, _ = self.post(f"/harness/session/{sid}/title", {"text": "   "})
+        self.assertEqual(code, 400)
+
+    def test_compact_route_refuses_when_busy_and_reports_when_idle(self):
+        # ADR-0019 (/compact): idle-only manual compaction
+        import time
+        _, created = self.post("/harness/session", {})
+        sid = created["id"]
+        self.post(f"/harness/session/{sid}/message", {"content": "a task with words"})
+        code, body = self.get(f"/harness/events?session={sid}")
+        if body["busy"]:
+            code, _ = self.post(f"/harness/session/{sid}/compact", {})
+            self.assertEqual(code, 409)
+            for _ in range(200):
+                if not self.mgr.live(sid).busy:
+                    break
+                time.sleep(0.02)
+        code, body = self.post(f"/harness/session/{sid}/compact", {})
+        # a one-turn mock session has nothing to compact: 409 with a reason,
+        # never a silent success
+        self.assertIn(code, (200, 409))
+        if code == 409:
+            self.assertIn("compact", body["error"]["message"])
+
     def test_skills_route_lists_the_store(self):
         # ADR-0018: names + descriptions only, never bodies
         (self.root / "skills" / "demo-skill").mkdir(parents=True)

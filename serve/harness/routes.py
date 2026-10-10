@@ -408,6 +408,21 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
                 handler._json(200, {"id": mgr.fork(sid, boundary, roots=roots)})
             elif action == "cancel":
                 handler._json(200, {"cancelled": mgr.cancel(sid)})
+            elif action == "title":
+                # ADR-0019 (/title): a user-authored label; the fold prefers
+                # the latest session/title row.
+                text = req.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("title: {\"text\": \"...\"}")
+                handler._json(200, {"ok": mgr.set_title(sid, text)})
+            elif action == "compact":
+                # ADR-0019 (/compact): manual compaction, idle only. The 409
+                # rides the standard error envelope so hpost surfaces the reason.
+                ok, why = mgr.compact(sid)
+                if not ok:
+                    _bad(handler, 409, f"compact: {why}")
+                else:
+                    handler._json(200, {"ok": True, "detail": why})
             elif action == "delete":
                 # destructive: the JSONL log IS the session (ADR-0004); the UI
                 # confirms before posting. 404 for an unknown id (FileNotFoundError

@@ -253,3 +253,15 @@
 .harness-stats__tick { stroke: var(--st-warn); stroke-width: 1; stroke-dasharray: 2 2; }
 .harness-stats__totals { margin: 0; }
 @media (max-width: 640px) { .harness-stats { width: calc(100vw - 24px); max-height: 80vh; } }
+
+/* ---- slash-command autocomplete (M11c, ADR-0019): typing assistance,
+   not a dialog — composer-anchored, no scrim (ADR-0016 §1 governs dialogs) ---- */
+.harness-main .st-composer { position: relative; }
+#h-ac { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 40;
+  display: flex; flex-direction: column; gap: 2px; padding: var(--st-s-1);
+  background: var(--st-surface-2); border: 1px solid var(--st-line-strong, var(--st-line));
+  border-radius: var(--st-r-card, 8px); box-shadow: 0 16px 40px rgba(0, 0, 0, .65), 0 3px 10px rgba(0, 0, 0, .5);
+  max-height: 260px; overflow-y: auto; }
+.harness-ac__item { display: flex; align-items: baseline; gap: var(--st-s-2); padding: 4px 8px; border-radius: 6px; }
+.harness-ac__item.is-active { background: var(--st-accent-tint); }
+.harness-ac__item strong { min-width: 7.5em; font-variant-numeric: tabular-nums; }

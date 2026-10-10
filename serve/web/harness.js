@@ -1491,6 +1491,12 @@ $("h-composer").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("h-input").value.trim();
   if (!text) return;
+  if (text.startsWith("/")) {                 // ADR-0019: commands never reach the model
+    $("h-input").value = "";
+    autosizeHarness();
+    await runCommand(text);
+    return;
+  }
   if (!H.sid) { toast("info", "No session", "Start one with the + button."); return; }
   $("h-input").value = "";
   autosizeHarness();
@@ -1499,6 +1505,138 @@ $("h-composer").onsubmit = async (e) => {
     await hpost(`harness/session/${H.sid}/message`, body);
   } catch (err) { toast("error", "Send", err.message); }
 };
+
+// ------------------------------------------------------- slash commands (M11c, ADR-0019)
+// Client-side dispatch over the routes the buttons already call. Command
+// replies are local transcript notes (the log stays the session's truth,
+// ADR-0004). Built-in names beat skill names; a leading "/" is never a task.
+const COMMANDS = [
+  {name: "new",     group: "Session", help: "start a new session",            needs: false, run: () => startSession()},
+  {name: "fork",    group: "Session", help: "fork this session",              needs: true,  run: () => forkPopover()},
+  {name: "title",   group: "Session", help: "rename this session",            needs: true,  args: true, run: async (a) => {
+      if (!a) return "usage: /title <new name>";
+      await hpost(`harness/session/${H.sid}/title`, {text: a});
+      await loadSessions();
+      return `session titled: ${a}`; }},
+  {name: "roots",   group: "Session", help: "show this session's trusted folders", needs: true, run: () => wsPopover()},
+  {name: "preset",  group: "Session", help: "open Settings (preset applies to new sessions)", needs: false, run: (a) => {
+      settingsPopover();
+      if (a) { const sel = $("h-preset"); if ([...sel.options].some((o) => o.value === a)) { sel.value = a; sel.onchange(); } }
+      return null; }},
+  {name: "compact", group: "Run", help: "compact the context now (idle only)", needs: true, run: async () => {
+      try { const r = await hpost(`harness/session/${H.sid}/compact`, {}); return `compacted: ${r.detail}`; }
+      catch (e) { return e.message; } }},   // the 409 envelope already names the command
+  {name: "cancel",  group: "Run", help: "stop the current turn",              needs: true, run: async () => {
+      await hpost(`harness/session/${H.sid}/cancel`, {}); return "cancel requested"; }},
+  {name: "stop",    group: "Run", help: "= /cancel",                          needs: true, hidden: true, run: async () => {
+      await hpost(`harness/session/${H.sid}/cancel`, {}); return "cancel requested"; }},
+  {name: "export",  group: "Run", help: "download the session (md|jsonl)",    needs: true, args: true, run: (a) => {
+      if (a === "md" || a === "jsonl") { downloadExport(a === "md" ? "markdown" : "jsonl"); return null; }
+      if (a) return "usage: /export [md|jsonl]";
+      exportPopover(); return null; }},
+  {name: "status",  group: "Info", help: "session summary",                   needs: true, run: () => {
+      const roots = (H.roots && H.roots.length) ? H.roots.join(", ") : "server default";
+      return `session ${H.sid} · preset ${$("h-preset").value} · ${H.busy ? "working" : "idle"} · folders: ${roots}`; }},
+  {name: "context", group: "Info", help: "context numbers (the pill's)",      needs: false, run: () => {
+      const ctx = $("h-ctx").textContent || "no reading yet";
+      return `context: ${ctx} (same meter fold as the pill and compaction)`; }},
+  {name: "skills",  group: "Info", help: "list skills (each is also a command)", needs: false, run: async () => {
+      const {skills, warnings} = await hget("harness/skills");
+      if (!skills.length) return "no skills installed";
+      return skills.map((s) => `/${s.name} — ${s.description}`).concat(warnings.map((w) => `(warning: ${w})`)).join("\n"); }},
+  {name: "help",    group: "Info", help: "this list",                         needs: false, run: () => helpText()},
+];
+
+function helpText() {
+  const groups = {};
+  for (const c of COMMANDS) if (!c.hidden) (groups[c.group] = groups[c.group] || []).push(`/${c.name}${c.args ? " …" : ""} — ${c.help}`);
+  const lines = Object.entries(groups).map(([g, items]) => `${g}: ${items.join(" · ")}`);
+  lines.push(`+ ${SKILL_NAMES.length} skill command${SKILL_NAMES.length === 1 ? "" : "s"} (/skills to list)`);
+  return lines.join("\n");
+}
+
+async function runCommand(text) {
+  const m = text.match(/^\/([A-Za-z0-9_-]+)\s*([\s\S]*)$/);
+  const name = m ? m[1].toLowerCase() : "";
+  const args = (m ? m[2] : "").trim();
+  let cmd = COMMANDS.find((c) => c.name === name);
+  if (!cmd) {
+    // skill invocation (Hermes pattern): the MODEL pulls the body via
+    // skill_view — progressive disclosure stays intact (ADR-0018/0019).
+    if (SKILL_NAMES.includes(name)) {
+      if (!H.sid) { toast("info", "No session", "Start one with the + button."); return; }
+      await hpost(`harness/session/${H.sid}/message`,
+                  {content: `load skill '${name}' with skill_view and follow it${args ? ` for: ${args}` : ""}`,
+                   target: H.busy ? "steer" : "auto"});
+      return;
+    }
+    toast("warn", "Unknown command", `/${name} — /help lists the commands`);
+    return;
+  }
+  if (cmd.needs && !H.sid) { toast("info", "No session", `/${cmd.name} needs an open session.`); return; }
+  const reply = await cmd.run(args);
+  if (reply) el("harness-note", `<span class="muted small">${esc(reply).replace(/\n/g, "<br>")}</span>`);
+}
+
+// autocomplete: "/" at the composer start filters commands + skills
+let AC = {open: false, items: [], idx: -1};
+function acClose() {
+  AC.open = false; AC.items = []; AC.idx = -1;
+  const p = document.getElementById("h-ac");
+  if (p) p.remove();
+  $("h-input").removeAttribute("aria-activedescendant");
+}
+function acUpdate() {
+  const v = $("h-input").value;
+  if (!v.startsWith("/") || v.slice(1).includes(" ") || v.slice(1).includes("\n")) { acClose(); return; }
+  const q = v.slice(1).toLowerCase();
+  const cmds = COMMANDS.filter((c) => !c.hidden && c.name.startsWith(q))
+    .map((c) => ({name: c.name, help: c.help, kind: "cmd"}));
+  const skills = SKILL_NAMES.filter((s) => s.toLowerCase().startsWith(q) && !COMMANDS.some((c) => c.name === s.toLowerCase()))
+    .map((s) => ({name: s, help: "skill", kind: "skill"}));
+  const items = [...cmds, ...skills];
+  if (!items.length) { acClose(); return; }
+  AC.items = items; AC.open = true;
+  if (AC.idx >= items.length) AC.idx = -1;
+  let pop = document.getElementById("h-ac");
+  if (!pop) {
+    pop = document.createElement("div");
+    pop.id = "h-ac";
+    pop.setAttribute("role", "listbox");
+    pop.setAttribute("aria-label", "Command autocomplete");
+    $("h-composer").appendChild(pop);
+  }
+  pop.innerHTML = items.map((it, i) =>
+    `<div class="harness-ac__item${i === AC.idx ? " is-active" : ""}" role="option" id="h-ac-${i}"` +
+    ` aria-selected="${i === AC.idx}"><strong>/${esc(it.name)}</strong><span class="muted small">${esc(it.help)}</span></div>`).join("");
+}
+function acAccept(explicit) {
+  // Tab is explicit completion: a unique match completes even unselected.
+  // Enter with nothing selected runs the typed text as a command.
+  if (AC.idx < 0) {
+    if (!explicit || AC.items.length !== 1) return false;
+    AC.idx = 0;
+  }
+  $("h-input").value = "/" + AC.items[AC.idx].name + " ";
+  acClose();
+  return true;
+}
+$("h-input").addEventListener("input", acUpdate);
+$("h-input").addEventListener("blur", () => setTimeout(acClose, 150));
+$("h-input").addEventListener("keydown", (e) => {
+  if (!AC.open) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); AC.idx = (AC.idx + 1) % AC.items.length; acRepaintIdx(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); AC.idx = (AC.idx - 1 + AC.items.length) % AC.items.length; acRepaintIdx(); }
+  else if (e.key === "Tab") { e.preventDefault(); acAccept(true); }
+  else if (e.key === "Enter" && AC.idx >= 0) { e.preventDefault(); acAccept(false); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); acClose(); }
+});
+function acRepaintIdx() {
+  const pop = document.getElementById("h-ac");
+  if (!pop) return;
+  [...pop.children].forEach((c, i) => { c.classList.toggle("is-active", i === AC.idx); c.setAttribute("aria-selected", String(i === AC.idx)); });
+  $("h-input").setAttribute("aria-activedescendant", `h-ac-${AC.idx}`);
+}
 // parity with the Chat composer: Enter sends, Shift+Enter is a new line
 $("h-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("h-composer").requestSubmit(); }

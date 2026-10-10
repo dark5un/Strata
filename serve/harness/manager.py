@@ -578,6 +578,36 @@ class HarnessManager:
     def answer(self, session_id: str, qid: str, answer: dict) -> bool:
         return self.live(session_id).board.answer(qid, answer)
 
+    def set_title(self, session_id: str, text: str) -> bool:
+        """ADR-0019 (/title): a user-authored title row. The fold already
+        prefers the latest session/title; the model's auto-title never
+        overwrites a human one (it lands once, before any user title)."""
+        text = " ".join(str(text).split())[:60]
+        if not text:
+            return False
+        live = self.live(session_id)
+        live.handle.append(ev.SESSION_TITLE, {"text": text, "by": "user"})
+        live.handle.flush()
+        return True
+
+    def compact(self, session_id: str) -> tuple[bool, str]:
+        """ADR-0019 (/compact): manual compaction, idle only. The
+        meter-driven trigger (ADR-0006) stays the default; this is the
+        human 'do it now' path. Same two moves as the automatic pass:
+        prune oversized tool results, then summarize the oldest span."""
+        live = self.live(session_id)
+        if live.busy:
+            return False, "the session is working — cancel first"
+        from .compaction import prune_tool_results, summarize_oldest
+        from .meter import fold_meter
+        before = fold_meter(live.handle.snapshot())["prompt_estimate"]
+        pruned = prune_tool_results(live.handle)
+        summarized = summarize_oldest(live.handle, live.loop.engine)
+        after = fold_meter(live.handle.snapshot())["prompt_estimate"]
+        if not pruned and not summarized:
+            return False, "nothing to compact (session is small or already compacted)"
+        return True, f"pruned {pruned} tool result(s), summarized={summarized}, {before} -> {after} tokens"
+
     def decide(self, session_id: str, call_id: str, outcome: str) -> bool:
         if outcome not in ("allow-once", "deny", "cancelled"):
             return False
