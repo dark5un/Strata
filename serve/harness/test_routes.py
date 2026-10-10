@@ -324,6 +324,20 @@ class SessionCommandTests(RoutesBase):
         row = next(s for s in listing["sessions"] if s["id"] == ok["id"])
         self.assertEqual(row["roots"], [str((ws / "proj").resolve())])
 
+    def test_sessions_carry_default_roots(self):
+        # M9 operator default: /harness/sessions surfaces the server's
+        # defaultRoots so the web picker can seed itself on boot.
+        ws = self.root / "workspaces"
+        ws.mkdir()
+        self.mgr.default_roots = [str(ws.resolve())]
+        _, listing = self.get("/harness/sessions")
+        self.assertEqual(listing["defaultRoots"], [str(ws.resolve())])
+        code, created = self.post("/harness/session", {})   # no explicit roots
+        self.assertEqual(code, 200)
+        _, listing2 = self.get("/harness/sessions")
+        row = next(s for s in listing2["sessions"] if s["id"] == created["id"])
+        self.assertEqual(row["roots"], [str(ws.resolve())])
+
     def test_ls_lists_directories_only(self):
         # M9 security contract: the picker route never discloses file names
         # or contents — a file path is refused, files inside a dir are skipped.

@@ -47,6 +47,16 @@ but never widen them.
    popover with autocomplete, session-list sub-badge when roots != default,
    approval cards show which root a call lives in ("inside X" / "outside
    every trusted folder — will be refused"). Icon-only chip below 720px.
+7. **Operator default roots (follow-up, same day).** `STRATA_HARNESS_ROOTS`
+   (os.pathsep-joined) at server start gives the deployment a default
+   trusted tree: a session created WITHOUT explicit roots is fenced to it
+   instead of the bare workspace_root. Entries are validated at
+   construction (a typo'd dir is dropped, never fatal); explicit per-session
+   roots still win; forks/subagents inherit as usual. `/harness/sessions`
+   surfaces `defaultRoots` so the web picker seeds its next-session list
+   from it on boot — the fence the user sees is the fence they'd get. The
+   quadlets set it to `/data/workspaces`, so a no-picking session is
+   already fenced to the shared workspaces tree.
 
 ## Consequences
 

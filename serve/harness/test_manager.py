@@ -234,6 +234,31 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(listing[0]["id"], sid)
         self.assertGreater(listing[0]["events"], 0)
 
+    def test_default_roots_fence_new_sessions(self):
+        # M9 operator default: a session created with no explicit roots is
+        # fenced to the deployment's default tree; explicit roots still win;
+        # an unusable default entry is dropped at construction (server start
+        # must not die on a typo).
+        ws = self.root / "workspaces"
+        ws.mkdir()
+        mgr = HarnessManager(self.root / "sessions", scripted([]),
+                             spill_dir=self.root / "spill", workspace_root=self.root,
+                             default_roots=[str(ws), str(self.root / "nope")])
+        self.assertEqual(mgr.default_roots, [str(ws.resolve())])
+        sid = mgr.new()
+        row = next(s for s in mgr.list_sessions() if s["id"] == sid)
+        self.assertEqual(row["roots"], [str(ws.resolve())])
+        # explicit roots override the default
+        sid2 = mgr.new(roots=[str(self.root)])
+        row2 = next(s for s in mgr.list_sessions() if s["id"] == sid2)
+        self.assertEqual(row2["roots"], [str(self.root.resolve())])
+        # all entries unusable -> no default (today's bare-workspace behavior)
+        mgr2 = HarnessManager(self.root / "s2", scripted([]),
+                              default_roots=[str(self.root / "gone")])
+        self.assertIsNone(mgr2.default_roots)
+        sid3 = mgr2.new()
+        self.assertIsNone(next(s for s in mgr2.list_sessions() if s["id"] == sid3)["roots"])
+
     def test_session_title(self):
         # M6 fallback + M7 D10: the model names the session after its first
         # turn; the truncated first message is the fallback while there is none

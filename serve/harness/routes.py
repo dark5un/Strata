@@ -47,7 +47,9 @@ def handle_get(handler, svc, path: str) -> None:
     rest = path[len("/harness"):].strip("/")
     query = parse_qs(urlsplit(handler.path).query)
     if rest == "sessions":
-        handler._json(200, {"sessions": mgr.list_sessions()})
+        # defaultRoots (M9): the operator's default trusted folders — the web
+        # picker seeds its next-session roots from these on boot.
+        handler._json(200, {"sessions": mgr.list_sessions(), "defaultRoots": mgr.default_roots})
         return
     if rest == "ls":
         # M9 (ADR-0015): the workspace picker's directory tree. Directories

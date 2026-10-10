@@ -80,7 +80,8 @@ class HarnessManager:
     def __init__(self, sessions_dir: Path, engine_factory, *, spill_dir: Path | None = None,
                  workspace_root: Path | None = None, metrics_fn=None,
                  presets_dir: Path | None = None, sampling: dict | None = None,
-                 mcp_hub=None, plugins_dir: Path | None = None) -> None:
+                 mcp_hub=None, plugins_dir: Path | None = None,
+                 default_roots: list[str] | None = None) -> None:
         self.dir = sessions_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.engine_factory = engine_factory          # () -> engine callable
@@ -91,6 +92,20 @@ class HarnessManager:
         self.sampling = dict(sampling or {})          # rides the request/header envelope (M7b)
         self.mcp_hub = mcp_hub                        # serve/mcp.py's McpHub when MCP servers are set (ADR-0012)
         self.plugins_dir = plugins_dir                # None = plugins off (ADR-0014: opt-in at server start)
+        # M9: the operator's default trusted folders (STRATA_HARNESS_ROOTS,
+        # os.pathsep-joined). A new session with no explicit roots starts
+        # fenced to these instead of the bare workspace_root — the container
+        # deployment sets this to /data/workspaces so the picker's tree is
+        # the fence from the first message. Validated at construction; an
+        # unusable entry is dropped (server start must not die on a typo).
+        self.default_roots: list[str] | None = None
+        if default_roots:
+            out = []
+            for r in default_roots:
+                p = Path(str(r)).expanduser().resolve()
+                if p.is_dir():
+                    out.append(str(p))
+            self.default_roots = out or None
         self._plugin_failures: list[dict] = []        # last attach's import/contract errors (panel state)
         self._plugin_tool_names: list[str] = []       # last attach's reviewed plugin tool names
         self._live: dict[str, Live] = {}
@@ -115,6 +130,10 @@ class HarnessManager:
                     raise ValueError(f"trusted root {str(r)!r} is not a directory")
                 out.append(str(p))
             trusted = out
+        elif self.default_roots:
+            # operator default (M9): a session created without explicit roots
+            # is fenced to the deployment's trusted tree, not the bare cwd
+            trusted = list(self.default_roots)
         h = create(self.dir, session_id, cwd=str(self.workspace_root or Path.cwd()), agent_preset=preset,
                    trusted_roots=trusted)
         return h.header["id"]

@@ -42,7 +42,15 @@ async function hpost(path, body) {
 // ------------------------------------------------------------------ sessions
 async function loadSessions() {
   try {
-    H.sessions = (await hget("harness/sessions")).sessions;
+    const d = await hget("harness/sessions");
+    H.sessions = d.sessions;
+    // M9: the server's default trusted folders seed the picker on boot, so
+    // a fresh page shows the fence a no-roots session would actually get
+    // (the deployment sets STRATA_HARNESS_ROOTS; the server applies it too).
+    if (d.defaultRoots && !H.pendingRoots.length && !H.sid) {
+      H.pendingRoots = [...d.defaultRoots];
+      setWsChip();
+    }
   } catch (e) { toast("error", "Harness", e.message); return; }
   const box = $("h-session-list");
   box.innerHTML = "";

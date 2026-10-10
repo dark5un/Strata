@@ -40,6 +40,10 @@ def attach(svc, a, cfg: dict, hub=None) -> None:
     svc.harness = HarnessManager(sessions_dir,
                                  lambda: make_service_engine(svc, sampling=dict(svc.sampling_defaults)),
                                  workspace_root=Path(os.environ.get("STRATA_HARNESS_WORKSPACE", os.getcwd())),
+                                 # M9: operator default trusted folders for new
+                                 # sessions (os.pathsep-joined); the quadlets
+                                 # set this to /data/workspaces.
+                                 default_roots=[r for r in os.environ.get("STRATA_HARNESS_ROOTS", "").split(os.pathsep) if r] or None,
                                  metrics_fn=lambda: svc.metrics(),
                                  mcp_hub=hub,
                                  plugins_dir=plugins_dir)
