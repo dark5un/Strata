@@ -211,6 +211,9 @@
                  section styles over it rather than editing it. -->
             <button class="st-btn st-btn--secondary harness-ws-chip" id="h-ws" aria-haspopup="dialog" aria-expanded="false" title="Trusted folders for this session">
               <svg class="st-icon st-icon--sm" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4L10 8h9.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"></path></svg>
+              <!-- M9 UX: the lock only shows while a live session's roots are frozen —
+                   the chip must not look editable when it is not -->
+              <svg class="st-icon st-icon--sm harness-ws-lock" id="h-ws-lock" viewBox="0 0 24 24" fill="none" aria-hidden="true" hidden><path d="M8 10V8a4 4 0 0 1 8 0v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path><rect x="6" y="10" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"></rect></svg>
               <span id="h-ws-label">workspace</span><span class="st-badge st-badge--reading" id="h-ws-count" hidden></span>
             </button>
             <span class="harness-bar__group">
@@ -234,7 +237,7 @@
               <button class="st-btn st-btn--secondary" id="h-export" title="Export this session (Markdown or raw JSONL)" aria-haspopup="true">Export</button>
               <button class="st-btn st-btn--secondary" id="h-plan" title="Plan mode: design first, no machine changes" aria-pressed="false">Plan</button>
               <button class="st-btn st-btn--secondary" id="h-goal" title="Goal mode: keep working toward an objective across turns" aria-pressed="false">Goal</button>
-              <button class="st-btn st-btn--secondary" id="h-fork" title="Fork this session">Fork</button>
+              <button class="st-btn st-btn--secondary" id="h-fork" title="Fork this session — optionally with narrower trusted folders">Fork</button>
               <button class="st-btn st-btn--danger" id="h-cancel" title="Stop the current turn" hidden>Stop</button>
             </span>
           </span>

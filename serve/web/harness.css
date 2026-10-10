@@ -173,6 +173,8 @@
 /* ---- workspaces (M9 / ADR-0015) ---- */
 .harness-ws-chip { display: inline-flex; align-items: center; gap: var(--st-s-1);
   max-width: 220px; }
+/* frozen-roots lock glyph: shown only while a live session is open (setWsChip) */
+.harness-ws-lock { flex: none; color: var(--st-ink-soft); }
 .harness-ws-chip #h-ws-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .harness-ws-pop { min-width: 340px; max-width: 520px; }
 .harness-ws-rows { list-style: none; margin: var(--st-s-2) 0; padding: 0; display: grid; gap: var(--st-s-1); }

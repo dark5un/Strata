@@ -87,7 +87,7 @@ function sessionListKeys(e) {
 }
 $("h-session-list").addEventListener("keydown", sessionListKeys);
 
-$("h-new").onclick = async () => {
+async function startSession() {
   try {
     // M9: the picker's pending roots ride the create call; they lock into the
     // session header at creation (the first message can no longer change them).
@@ -98,22 +98,29 @@ $("h-new").onclick = async () => {
     await loadSessions();
     openSession(id);
   } catch (e) { toast("error", "Could not start a session", e.message); }
-};
+}
+$("h-new").onclick = startSession;
 
 // ------------------------------------------------------------------ workspaces (M9 / ADR-0015)
 // The session bar's workspace chip + roots popover. Folders are just folders:
 // the picker autocompletes against the container's tree via harness/ls
 // (directories only). Roots lock at session creation; a live session's roots
-// are read-only ("fork to change").
+// are read-only, and the popover's escape hatch is the fork-with-roots picker
+// below — the copy must always name a control that actually exists (UX review
+// of the M9 screenshot: "fork to change" was a dead end because the Fork
+// button posted an empty body, so forking could never change roots).
 function wsShortName(p) {
   const parts = String(p).replace(/\/+$/, "").split("/");
   return parts[parts.length - 1] || p;
 }
 
 function setWsChip() {
-  const chip = $("h-ws"), label = $("h-ws-label"), count = $("h-ws-count");
+  const chip = $("h-ws"), label = $("h-ws-label"), count = $("h-ws-count"), lock = $("h-ws-lock");
   // with no session open the chip previews the picker's pending roots
   const roots = H.sid ? (H.roots || []) : H.pendingRoots;
+  // honesty (UX review): a live session's roots are frozen — say so on the
+  // chip itself, not only in the popover's small print
+  if (lock) lock.hidden = !H.sid;
   if (!roots.length) {
     label.textContent = "workspace: server default";
     count.hidden = true;
@@ -134,6 +141,45 @@ function closeWsPop() {
   $("h-ws").setAttribute("aria-expanded", "false");
 }
 
+// shared autocomplete: typing a path browses the container's tree via
+// harness/ls (directories only). Enter-to-add stays with the caller because
+// the target list differs (pending roots vs fork roots).
+function wireRootsBrowse(input, suggest) {
+  let timer = null;
+  const browse = async (frag) => {
+    try {
+      const lastSlash = frag.lastIndexOf("/");
+      const parent = lastSlash > 0 ? frag.slice(0, lastSlash) : "/";
+      const needle = frag.slice(lastSlash + 1).toLowerCase();
+      const {dirs} = await hget(`harness/ls?path=${encodeURIComponent(parent)}`);
+      const hits = dirs.filter((d) => d.name.toLowerCase().includes(needle)).slice(0, 12);
+      suggest.innerHTML = "";
+      for (const d of hits) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "harness-ws-hit"; b.setAttribute("role", "option");
+        b.textContent = d.path;
+        b.onclick = () => { input.value = d.path + "/"; suggest.hidden = true; input.focus(); };
+        suggest.appendChild(b);
+      }
+      suggest.hidden = !hits.length;
+    } catch { suggest.hidden = true; }
+  };
+  input.oninput = () => { clearTimeout(timer); timer = setTimeout(() => browse(input.value), 250); };
+  input.onkeydown = (e) => {
+    if (e.key === "ArrowDown") {
+      const first = suggest.querySelector("button"); if (first) { e.preventDefault(); first.focus(); }
+    }
+  };
+  suggest.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const items = [...suggest.querySelectorAll("button")];
+      const i = items.findIndex((x) => x === document.activeElement);
+      const n = items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
+      if (n) { e.preventDefault(); n.focus(); }
+    }
+  });
+}
+
 async function wsPopover() {
   closeWsPop();
   const open = !!H.sid;                          // roots lock at session creation (header)
@@ -150,8 +196,14 @@ async function wsPopover() {
     (editable ? `<div class="harness-ws-add"><input class="st-input" id="h-ws-input" autocomplete="off"
         placeholder="Add folder: /data/workspaces/…" aria-label="Add a trusted folder">
       <div class="harness-ws-suggest" id="h-ws-suggest" role="listbox" hidden></div></div>` : "") +
-    `<p class="muted small">${open ? "This session keeps its roots — fork to change them."
-      : "These folders apply to the next session you start."}</p>`;
+    (editable ? `<p class="muted small">These folders apply to the next session you start.</p>`
+      // the escape hatch must be a real control, not prose (UX review of the
+      // M9 screenshot): name the buttons that actually change the fence
+      : `<p class="muted small">This session keeps its roots for its whole lifetime.</p>
+        <div class="harness-popover__actions">
+          <button class="st-btn st-btn--secondary" id="h-ws-fork" title="Fork, narrowing the folders if you like">Fork with different folders…</button>
+          <button class="st-btn st-btn--secondary" id="h-ws-new" title="Start a new session with these same folders">New session with these folders</button>
+        </div>`);
   $("h-bar").appendChild(pop);
   $("h-ws").setAttribute("aria-expanded", "true");
   $("h-ws-close").onclick = () => { closeWsPop(); $("h-ws").focus(); };
@@ -177,31 +229,20 @@ async function wsPopover() {
     }
   };
   render();
-  if (!editable) return;
+  if (!editable) {
+    $("h-ws-fork").onclick = () => { closeWsPop(); forkPopover(); };
+    $("h-ws-new").onclick = () => {
+      H.pendingRoots = [...(H.roots || [])];
+      closeWsPop();
+      startSession();
+    };
+    return;
+  }
 
   // autocomplete against harness/ls: type a path, the picker browses it
   const input = $("h-ws-input"), suggest = $("h-ws-suggest");
-  let timer = null;
-  const browse = async (frag) => {
-    try {
-      const lastSlash = frag.lastIndexOf("/");
-      const parent = lastSlash > 0 ? frag.slice(0, lastSlash) : "/";
-      const needle = frag.slice(lastSlash + 1).toLowerCase();
-      const {dirs} = await hget(`harness/ls?path=${encodeURIComponent(parent)}`);
-      const hits = dirs.filter((d) => d.name.toLowerCase().includes(needle)).slice(0, 12);
-      suggest.innerHTML = "";
-      for (const d of hits) {
-        const b = document.createElement("button");
-        b.type = "button"; b.className = "harness-ws-hit"; b.setAttribute("role", "option");
-        b.textContent = d.path;
-        b.onclick = () => { input.value = d.path + "/"; suggest.hidden = true; input.focus(); };
-        suggest.appendChild(b);
-      }
-      suggest.hidden = !hits.length;
-    } catch { suggest.hidden = true; }
-  };
-  input.oninput = () => { clearTimeout(timer); timer = setTimeout(() => browse(input.value), 250); };
-  input.onkeydown = (e) => {
+  wireRootsBrowse(input, suggest);
+  input.onkeydown = ((prev) => (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       const v = input.value.trim().replace(/\/+$/, "");
@@ -209,18 +250,8 @@ async function wsPopover() {
       if (!H.pendingRoots.includes(v)) H.pendingRoots.push(v);
       input.value = ""; suggest.hidden = true;
       setWsChip(); render();
-    } else if (e.key === "ArrowDown") {
-      const first = suggest.querySelector("button"); if (first) { e.preventDefault(); first.focus(); }
-    }
-  };
-  suggest.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      const items = [...suggest.querySelectorAll("button")];
-      const i = items.findIndex((x) => x === document.activeElement);
-      const n = items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
-      if (n) { e.preventDefault(); n.focus(); }
-    }
-  });
+    } else prev(e);
+  })(input.onkeydown);
 }
 $("h-ws").onclick = wsPopover;
 
@@ -1250,15 +1281,94 @@ $("h-cancel").onclick = async () => {
   try { await hpost(`harness/session/${H.sid}/cancel`, {}); } catch (e) { toast("warn", "Cancel", e.message); }
 };
 
-$("h-fork").onclick = async () => {
+// Fork with roots (M9 UX fix): the popover's "fork to change them" copy was a
+// dead end — the Fork button posted an empty body, so a fork always inherited
+// the parent's roots and the fence could never move. The fork route already
+// accepts roots (narrow-only, enforced server-side in session.fork); this is
+// the picker for it. Widening stays a NEW session, never a fork (ADR-0015).
+function forkPopover() {
+  closeForkPopover();
   if (!H.sid) return;
-  try {
-    const {id} = await hpost(`harness/session/${H.sid}/fork`, {});
-    toast("success", "Forked", `new session ${id}`);
-    await loadSessions();
-    openSession(id);
-  } catch (e) { toast("error", "Fork", e.message); }
-};
+  const parentRoots = [...(H.roots || [])];
+  let roots = [...parentRoots];
+  const pop = document.createElement("div");
+  pop.id = "h-fork-pop";
+  pop.className = "st-card harness-popover harness-ws-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Fork this session");
+  pop.innerHTML = `<div class="harness-popover__actions"><span class="card-title">Fork — trusted folders</span>` +
+    `<button class="st-btn st-btn--icon" id="h-fork-close" title="Close" aria-label="Close">✕</button></div>` +
+    `<ul class="harness-ws-rows" id="h-fork-rows"></ul>` +
+    `<div class="harness-ws-add"><input class="st-input" id="h-fork-input" autocomplete="off"
+        placeholder="Add a subfolder of the current roots…" aria-label="Add a trusted folder for the fork">
+      <div class="harness-ws-suggest" id="h-fork-suggest" role="listbox" hidden></div></div>` +
+    `<p class="muted small" id="h-fork-note">A fork may only narrow these folders. To widen them, start a new session instead.</p>` +
+    `<div class="harness-popover__actions">` +
+    `<button class="st-btn st-btn--primary" id="h-fork-go">Fork</button>` +
+    `<button class="st-btn st-btn--secondary" id="h-fork-asis">Fork as-is</button></div>`;
+  $("h-bar").appendChild(pop);
+  const close = () => { closeForkPopover(); $("h-fork").focus(); };
+  $("h-fork-close").onclick = close;
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+
+  const rows = $("h-fork-rows");
+  const insideParent = (p) => !parentRoots.length ||
+    parentRoots.some((pr) => p === pr || p.startsWith(pr.replace(/\/+$/, "") + "/"));
+  const render = () => {
+    rows.innerHTML = "";
+    if (!roots.length) {
+      rows.innerHTML = `<li class="muted small">${parentRoots.length
+        ? "no folders — the fork keeps the server default workspace"
+        : "server default workspace"}</li>`;
+      return;
+    }
+    for (const r of roots) {
+      const li = document.createElement("li");
+      li.innerHTML = `<code class="inline" title="${esc(r)}">${esc(r)}</code>` +
+        ` <button class="st-btn st-btn--icon" title="Remove" aria-label="Remove ${esc(r)}">✕</button>`;
+      li.querySelector("button").onclick = () => { roots = roots.filter((x) => x !== r); render(); };
+      rows.appendChild(li);
+    }
+  };
+  render();
+
+  const input = $("h-fork-input"), suggest = $("h-fork-suggest"), note = $("h-fork-note");
+  wireRootsBrowse(input, suggest);
+  input.onkeydown = ((prev) => (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const v = input.value.trim().replace(/\/+$/, "");
+      if (!v) return;
+      if (!insideParent(v)) {
+        note.textContent = `"${v}" is outside the parent's roots — a fork can only narrow them.`;
+        return;
+      }
+      if (!roots.includes(v)) roots.push(v);
+      input.value = ""; suggest.hidden = true;
+      render();
+    } else prev(e);
+  })(input.onkeydown);
+
+  const doFork = async (body) => {
+    try {
+      const {id} = await hpost(`harness/session/${H.sid}/fork`, body);
+      close();
+      toast("success", "Forked", `new session ${id}`);
+      await loadSessions();
+      openSession(id);
+    } catch (e) { toast("error", "Fork", e.message); }
+  };
+  $("h-fork-asis").onclick = () => doFork({});
+  $("h-fork-go").onclick = () => {
+    const same = roots.length === parentRoots.length && roots.every((r) => parentRoots.includes(r));
+    doFork(same ? {} : {roots});
+  };
+}
+function closeForkPopover() {
+  const pop = document.getElementById("h-fork-pop");
+  if (pop) pop.remove();
+}
+$("h-fork").onclick = () => { if (H.sid) forkPopover(); };
 
 // approval policy: ask | never | allowlist | yolo (patterns ride the store;
 // the MODE never does — yolo is per-session and never restored, ADR-0010)
