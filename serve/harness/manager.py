@@ -139,7 +139,7 @@ class HarnessManager:
                 out.append({"id": sid, "busy": live.busy, "events": len(live.handle.events),
                             "origin": h.get("origin", "user"), "parent": h.get("parentSession"),
                             "preset": h.get("agentPreset", "default"),
-                            "roots": trusted_roots_of(h),   # M9: the list's workspace sub-badge
+                            "roots": h.get("trustedRoots"),   # M9: raw field — None = server default
                             "title": _session_title(live.handle.events)})
                 continue
             try:
@@ -150,7 +150,7 @@ class HarnessManager:
             out.append({"id": sid, "busy": False, "events": len(h.events),
                         "origin": h.header.get("origin", "user"), "parent": h.header.get("parentSession"),
                         "preset": h.header.get("agentPreset", "default"),
-                        "roots": trusted_roots_of(h.header),   # M9: the list's workspace sub-badge
+                        "roots": h.header.get("trustedRoots"),   # M9: raw — None = server default
                         "title": _session_title(h.events)})
         return out
 

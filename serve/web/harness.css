@@ -169,3 +169,29 @@
   .harness-resizer { display: none; }
   .harness-sessions { max-height: 160px; }
 }
+
+/* ---- workspaces (M9 / ADR-0015) ---- */
+.harness-ws-chip { display: inline-flex; align-items: center; gap: var(--st-s-1);
+  max-width: 220px; }
+.harness-ws-chip #h-ws-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-ws-pop { min-width: 340px; max-width: 520px; }
+.harness-ws-rows { list-style: none; margin: var(--st-s-2) 0; padding: 0; display: grid; gap: var(--st-s-1); }
+.harness-ws-rows li { display: flex; align-items: center; gap: var(--st-s-2); }
+.harness-ws-rows code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: left; }
+.harness-ws-add { position: relative; margin-top: var(--st-s-2); }
+.harness-ws-add input { width: 100%; }
+.harness-ws-suggest { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5;
+  display: grid; gap: 2px; background: var(--st-bg-raised, var(--st-bg)); border: 1px solid var(--st-line);
+  border-radius: var(--st-r-md); padding: var(--st-s-1); max-height: 220px; overflow: auto; }
+.harness-ws-hit { border: 0; background: transparent; color: inherit; font: inherit; text-align: left;
+  padding: var(--st-s-1) var(--st-s-2); border-radius: var(--st-r-sm); cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-ws-hit:hover, .harness-ws-hit:focus { background: var(--st-accent-tint); }
+.harness-ws-badge { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-ws-line { margin: var(--st-s-2) 0 0; display: flex; align-items: center; gap: var(--st-s-1); }
+/* icon-only chip below 720px (same pattern as the tab icons): the label is
+   redundant there — the title attribute carries the roots */
+@media (max-width: 720px) {
+  .harness-ws-chip #h-ws-label { display: none; }
+  .harness-ws-chip { max-width: none; }
+}

@@ -16,7 +16,7 @@ export default [
         AbortController: "readonly", TextDecoder: "readonly",
         encodeURIComponent: "readonly", JSON: "readonly", Math: "readonly",
         Set: "readonly", navigator: "readonly", Promise: "readonly",
-        setTimeout: "readonly", URL: "readonly", innerHeight: "readonly",
+        setTimeout: "readonly", clearTimeout: "readonly", URL: "readonly", innerHeight: "readonly",
         getComputedStyle: "readonly", parseInt: "readonly",
       },
     },

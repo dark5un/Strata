@@ -19,6 +19,8 @@ const H = {
   seenAsks: new Set(),   // synthetic ask rows already painted (dedup on reconnect)
   retryDelay: 1000,
   ctxEstimate: 0,        // the meter's fold (stream/delta kind=context): the pill's source of truth
+  roots: [],             // M9: the open session's trusted roots (from the list row)
+  pendingRoots: [],      // M9: the picker's roots for the NEXT session (defaults to the last one's)
 };
 
 const MAX_RENDERED = 400;   // DOM cap: a long session prunes its oldest rows
@@ -55,6 +57,7 @@ async function loadSessions() {
       (s.error ? `<span class="st-badge st-badge--error">unreadable</span>` : "") +
       (s.origin === "subagent" ? `<span class="st-badge st-badge--reading" title="subagent of ${esc(s.parent || "")}">sub</span>` : "") +
       (s.preset && s.preset !== "default" ? `<span class="st-badge st-badge--reading" title="preset">${esc(s.preset)}</span>` : "") +
+      (s.roots && s.roots.length ? `<span class="st-badge st-badge--reading harness-ws-badge" title="${esc(s.roots.join("\n"))}">${esc(wsShortName(s.roots[0]))}${s.roots.length > 1 ? ` +${s.roots.length - 1}` : ""}</span>` : "") +
       (s.busy ? `<span class="st-badge st-badge--generating">running</span>` : "");
     row.onclick = () => openSession(s.id);
     box.appendChild(row);
@@ -78,12 +81,140 @@ $("h-session-list").addEventListener("keydown", sessionListKeys);
 
 $("h-new").onclick = async () => {
   try {
-    const {id} = await hpost("harness/session", {preset: $("h-preset").value || "default"});
+    // M9: the picker's pending roots ride the create call; they lock into the
+    // session header at creation (the first message can no longer change them).
+    const body = {preset: $("h-preset").value || "default"};
+    if (H.pendingRoots.length) body.roots = H.pendingRoots;
+    const {id} = await hpost("harness/session", body);
     store.set("harness.session", id);
     await loadSessions();
     openSession(id);
   } catch (e) { toast("error", "Could not start a session", e.message); }
 };
+
+// ------------------------------------------------------------------ workspaces (M9 / ADR-0015)
+// The session bar's workspace chip + roots popover. Folders are just folders:
+// the picker autocompletes against the container's tree via harness/ls
+// (directories only). Roots lock at session creation; a live session's roots
+// are read-only ("fork to change").
+function wsShortName(p) {
+  const parts = String(p).replace(/\/+$/, "").split("/");
+  return parts[parts.length - 1] || p;
+}
+
+function setWsChip() {
+  const chip = $("h-ws"), label = $("h-ws-label"), count = $("h-ws-count");
+  // with no session open the chip previews the picker's pending roots
+  const roots = H.sid ? (H.roots || []) : H.pendingRoots;
+  if (!roots.length) {
+    label.textContent = "workspace: server default";
+    count.hidden = true;
+    chip.title = "No trusted folders set — the session uses the server's default workspace";
+  } else {
+    label.textContent = wsShortName(roots[0]);
+    count.hidden = roots.length < 2;
+    if (roots.length >= 2) count.textContent = `+${roots.length - 1}`;
+    chip.title = roots.join("\n");
+  }
+  // the chip stays enabled with no session open: it arms the picker for the
+  // NEXT session (the design's "last session's roots as the default")
+}
+
+function closeWsPop() {
+  const pop = document.getElementById("h-ws-pop");
+  if (pop) pop.remove();
+  $("h-ws").setAttribute("aria-expanded", "false");
+}
+
+async function wsPopover() {
+  closeWsPop();
+  const open = !!H.sid;                          // roots lock at session creation (header)
+  const editable = !open;                        // only the no-session state arms the picker
+  const shown = open ? (H.roots || []) : H.pendingRoots;
+  const pop = document.createElement("div");
+  pop.id = "h-ws-pop";
+  pop.className = "st-card harness-popover harness-ws-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Trusted folders");
+  pop.innerHTML = `<div class="harness-popover__actions"><span class="card-title">Trusted folders</span>` +
+    `<button class="st-btn st-btn--icon" id="h-ws-close" title="Close" aria-label="Close">✕</button></div>` +
+    `<ul class="harness-ws-rows" id="h-ws-rows"></ul>` +
+    (editable ? `<div class="harness-ws-add"><input class="st-input" id="h-ws-input" autocomplete="off"
+        placeholder="Add folder: /data/workspaces/…" aria-label="Add a trusted folder">
+      <div class="harness-ws-suggest" id="h-ws-suggest" role="listbox" hidden></div></div>` : "") +
+    `<p class="muted small">${open ? "This session keeps its roots — fork to change them."
+      : "These folders apply to the next session you start."}</p>`;
+  $("h-bar").appendChild(pop);
+  $("h-ws").setAttribute("aria-expanded", "true");
+  $("h-ws-close").onclick = () => { closeWsPop(); $("h-ws").focus(); };
+  pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeWsPop(); $("h-ws").focus(); } });
+
+  const rows = $("h-ws-rows");
+  const render = () => {
+    rows.innerHTML = "";
+    const list = shown;
+    if (!list.length) {
+      rows.innerHTML = `<li class="muted small">server default workspace</li>`;
+      return;
+    }
+    for (const r of list) {
+      const li = document.createElement("li");
+      li.innerHTML = `<code class="inline">${esc(r)}</code>` +
+        (editable ? ` <button class="st-btn st-btn--icon" title="Remove" aria-label="Remove ${esc(r)}">✕</button>` : "");
+      if (editable) li.querySelector("button").onclick = () => {
+        H.pendingRoots = H.pendingRoots.filter((x) => x !== r);
+        setWsChip(); render();
+      };
+      rows.appendChild(li);
+    }
+  };
+  render();
+  if (!editable) return;
+
+  // autocomplete against harness/ls: type a path, the picker browses it
+  const input = $("h-ws-input"), suggest = $("h-ws-suggest");
+  let timer = null;
+  const browse = async (frag) => {
+    try {
+      const lastSlash = frag.lastIndexOf("/");
+      const parent = lastSlash > 0 ? frag.slice(0, lastSlash) : "/";
+      const needle = frag.slice(lastSlash + 1).toLowerCase();
+      const {dirs} = await hget(`harness/ls?path=${encodeURIComponent(parent)}`);
+      const hits = dirs.filter((d) => d.name.toLowerCase().includes(needle)).slice(0, 12);
+      suggest.innerHTML = "";
+      for (const d of hits) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "harness-ws-hit"; b.setAttribute("role", "option");
+        b.textContent = d.path;
+        b.onclick = () => { input.value = d.path + "/"; suggest.hidden = true; input.focus(); };
+        suggest.appendChild(b);
+      }
+      suggest.hidden = !hits.length;
+    } catch { suggest.hidden = true; }
+  };
+  input.oninput = () => { clearTimeout(timer); timer = setTimeout(() => browse(input.value), 250); };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const v = input.value.trim().replace(/\/+$/, "");
+      if (!v) return;
+      if (!H.pendingRoots.includes(v)) H.pendingRoots.push(v);
+      input.value = ""; suggest.hidden = true;
+      setWsChip(); render();
+    } else if (e.key === "ArrowDown") {
+      const first = suggest.querySelector("button"); if (first) { e.preventDefault(); first.focus(); }
+    }
+  };
+  suggest.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const items = [...suggest.querySelectorAll("button")];
+      const i = items.findIndex((x) => x === document.activeElement);
+      const n = items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
+      if (n) { e.preventDefault(); n.focus(); }
+    }
+  });
+}
+$("h-ws").onclick = wsPopover;
 
 // ------------------------------------------------------------------ presets + export
 async function loadPresets() {
@@ -418,6 +549,10 @@ $("h-export").onclick = () => { if (H.sid) exportPopover(); };
 // ------------------------------------------------------------------ the stream
 function openSession(sid) {
   H.sid = sid;
+  const row = H.sessions.find((s) => s.id === sid);
+  H.roots = (row && row.roots) || [];               // M9: the chip shows this session's roots
+  if (H.roots.length) H.pendingRoots = [...H.roots];  // the picker defaults to the last session's
+  setWsChip();
   store.set("harness.session", sid);
   composerEnabled(true);   // boot may have disabled it (no sessions yet): opening one must re-enable
   H.lastSeq = -1;
@@ -834,12 +969,25 @@ function showUsage(u) {
 // the ask card shows the FULL payload (M7a-2 / ADR-0010): never approve what
 // you cannot read. shell: the whole command, scrollable. write/edit: the path
 // is the hero line, the content sits behind an expand.
+// M9: the human sees which sandbox a call lives in — the trusted root that
+// contains the path (or the shell's cwd). No match = outside the fence (the
+// tool will refuse it, but the card says so before the decision).
+function wsContextLine(path) {
+  const roots = H.roots || [];
+  if (!roots.length || !path) return "";
+  const hit = roots.find((r) => path === r || path.startsWith(r.replace(/\/+$/, "") + "/"));
+  return `<p class="muted small harness-ws-line">${icon("attach", "st-icon st-icon--sm")} ` +
+    (hit ? `inside <code class="inline">${esc(hit)}</code>` : `outside every trusted folder — will be refused`) +
+    `</p>`;
+}
+
 function approvalHero(d) {
   const a = d.args || {};
   if (d.tool === "shell") {
     return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
       `<span class="card-title">Run a shell command?${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
-      `<pre class="st-code harness-approval__full">${esc(a.command || d.preview || "")}</pre>`;
+      `<pre class="st-code harness-approval__full">${esc(a.command || d.preview || "")}</pre>` +
+      wsContextLine(a.cwd || "");
   }
   if (d.tool === "write_file") {
     const n = String(a.content || "").length;
@@ -849,7 +997,8 @@ function approvalHero(d) {
       `<span class="card-title">Write <code class="inline">${esc(a.path || "")}</code> — ${fmt(n)} chars${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}${pw}</span></div>` +
       (d.plugin_write ? `<p class="muted small">This file becomes server code after you review it in the Plugins panel. It will NOT load automatically.</p>` : "") +
       `<details class="st-collapse"><summary>show content${icon("chevron", "st-icon st-icon--sm st-chev")}</summary>` +
-      `<div class="st-collapse__body"><pre class="st-code harness-approval__full">${esc(a.content || "")}</pre></div></details>`;
+      `<div class="st-collapse__body"><pre class="st-code harness-approval__full">${esc(a.content || "")}</pre></div></details>` +
+      wsContextLine(a.path || "");
   }
   if (d.tool === "edit_file") {
     const pw = d.plugin_write
@@ -861,7 +1010,8 @@ function approvalHero(d) {
       `<div class="st-collapse__body"><div class="tool-call__label">find</div>` +
       `<pre class="st-code harness-approval__full">${esc(a.old_string || "")}</pre>` +
       `<div class="tool-call__label">replace</div>` +
-      `<pre class="st-code harness-approval__full">${esc(a.new_string || "")}</pre></div></details>`;
+      `<pre class="st-code harness-approval__full">${esc(a.new_string || "")}</pre></div></details>` +
+      wsContextLine(a.path || "");
   }
   const mcp = d.tool.includes("__")   // namespaced = an MCP hub tool (ADR-0012): out of process
     ? `<span class="st-badge st-badge--reading" title="MCP server &quot;${esc(d.tool.split("__")[0])}&quot; — runs out of process">mcp</span>` : "";
@@ -869,8 +1019,9 @@ function approvalHero(d) {
     ? ` <span class="st-badge st-badge--queued" title="provided by a self-authored plugin — runs in-process as server code">plugin</span>` : "";
   return `<div class="harness-approval__head">${icon("warning", "st-icon st-icon--sm")}` +
     `<span class="card-title">Run <code class="inline">${esc(d.tool)}</code>? ${mcp}${pl}${d.session ? ` <span class="st-badge st-badge--generating" title="asked by subagent ${esc(d.session)}">subagent</span>` : ""}</span></div>` +
-    `<pre class="st-code harness-approval__full">${esc(JSON.stringify(a, null, 1) || d.preview || "")}</pre>`;
-}
+    `<pre class="st-code harness-approval__full">${esc(JSON.stringify(a, null, 1) || d.preview || "")}</pre>` +
+    wsContextLine(a.path || a.file_path || "");
+    }
 function approvalCard(d) {
   const card = el("harness-approval",
     approvalHero(d) +
@@ -1164,6 +1315,7 @@ async function savePolicy() {
   if (await pluginsOn()) $("h-plugin-manage").hidden = false;   // ADR-0014: off -> no affordance
   pluginBadge();
   await loadSessions();
+  setWsChip();                             // M9: the chip starts honest (no session = server default)
   const saved = store.get("harness.session", null);
   if (saved && H.sessions.some((s) => s.id === saved)) openSession(saved);
   else if (H.sessions.length) openSession(H.sessions[0].id);
