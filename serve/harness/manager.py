@@ -81,7 +81,8 @@ class HarnessManager:
                  workspace_root: Path | None = None, metrics_fn=None,
                  presets_dir: Path | None = None, sampling: dict | None = None,
                  mcp_hub=None, plugins_dir: Path | None = None,
-                 default_roots: list[str] | None = None) -> None:
+                 default_roots: list[str] | None = None,
+                 skills_dir: Path | None = None) -> None:
         self.dir = sessions_dir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.engine_factory = engine_factory          # () -> engine callable
@@ -92,6 +93,10 @@ class HarnessManager:
         self.sampling = dict(sampling or {})          # rides the request/header envelope (M7b)
         self.mcp_hub = mcp_hub                        # serve/mcp.py's McpHub when MCP servers are set (ADR-0012)
         self.plugins_dir = plugins_dir                # None = plugins off (ADR-0014: opt-in at server start)
+        # ADR-0018: the skills store (prompt content, no code). Default:
+        # <harness>/skills next to sessions/. An empty/missing dir is fine:
+        # no index block, no tools beyond a failing skill_view.
+        self.skills_dir = skills_dir or (sessions_dir.parent / "skills")
         # M9: the operator's default trusted folders (STRATA_HARNESS_ROOTS,
         # os.pathsep-joined). A new session with no explicit roots starts
         # fenced to these instead of the bare workspace_root — the container
@@ -265,6 +270,32 @@ class HarnessManager:
         for extra in (spill_read_tool(spill_store), plan_mode_tool(board), goal_tool()):
             extra.needs_approval = False      # session-state tools: they touch no machine state
             tools[extra.name] = extra
+        # ADR-0018: the skills store (prompt content, no code — no review
+        # gate like plugins). The preset's skills: list gates visibility;
+        # a subagent intersects with its parent's visible set (ADR-0009
+        # rule). The index rides system_sections: injected per turn, so a
+        # skill edit lands next turn (no attach snapshot — prompt vs code).
+        from . import skills as _skills
+        # the gate is static per session (preset + parent intersection); the
+        # store itself is re-scanned per turn — a skill created mid-session
+        # must be viewable the same turn it lands in the index.
+        gate: set[str] | None = None if preset.skills is None else set(preset.skills)
+        if h.header.get("origin") == "subagent" and h.header.get("parentSession"):
+            try:
+                ph = open_session(self.dir, h.header["parentSession"]).header
+                ppreset, _ = load_preset(ph.get("agentPreset", "default"), self.presets_dir)
+                if gate is None and ppreset.skills is not None:
+                    gate = set(ppreset.skills)
+                elif gate is not None and ppreset.skills is not None:
+                    gate &= set(ppreset.skills)
+            except Exception:  # noqa: BLE001 - unreadable parent: no extra restriction
+                pass
+        view_tool = _skills.skill_view_tool(self.skills_dir, gate)
+        write_tool = _skills.skill_write_tool(self.skills_dir)
+        view_tool.needs_approval = False      # read-only, store-locked
+        write_tool.needs_approval = False     # prompt content only (ADR-0018 §3)
+        tools[view_tool.name] = view_tool
+        tools[write_tool.name] = write_tool
         if h.header.get("origin") != "subagent":
             # only user sessions delegate (the depth budget is the backstop;
             # ADR-0009: a preset may still deny it)
@@ -288,7 +319,13 @@ class HarnessManager:
                     if live_ref["v"] is not None else None,
                     system_sections=[lambda h=h: plan_section(fold_plan(h.snapshot())),
                                      lambda h=h: goal_section(fold_goal(h.snapshot())),
-                                     lambda p=preset: p.section()])
+                                     lambda p=preset: p.section(),
+                                     lambda sd=self.skills_dir, gate=gate:
+                                     # re-scan per turn (ADR-0018 §2): a skill edit lands
+                                     # next turn — prompt content, not attach-snapshotted code
+                                     (lambda st_w: _skills.index_section(
+                                         [s for s in st_w[0] if gate is None or s["name"] in gate], st_w[1]))(
+                                         _skills.scan_skills(sd))])
         loop._policy = policy                     # type: ignore[attr-defined]  # routes update it
         loop._broker = broker                     # type: ignore[attr-defined]
         loop._board = board                       # type: ignore[attr-defined]

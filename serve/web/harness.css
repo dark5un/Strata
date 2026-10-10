@@ -91,6 +91,7 @@
 .harness-question__actions input { flex: 1; min-width: 140px; }
 
 .harness-popover { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  max-height: 70vh; overflow-y: auto;   /* tall forms (preset editor) must scroll, not clip: the popover anchors below the bar, so the cap is relative, not full-viewport */
   display: flex; flex-direction: column; gap: var(--st-s-2); padding: var(--st-s-3); min-width: 260px;
   /* elevation cue the veil alone can't carry on a same-tone dark theme:
      lifted one step above --st-surface + a brighter edge + deep shadow */

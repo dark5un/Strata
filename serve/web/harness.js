@@ -373,6 +373,7 @@ $("h-preset").onchange = () => { store.set("harness.preset", $("h-preset").value
 
 // ------------------------------------------------------------------ preset manage panel (M7 D9 / ADR-0011)
 let PRESET_TOOLS = [];
+let SKILL_NAMES = [];      // ADR-0018: the store's names, the skills input's placeholder hint
 async function presetManage() {
   closePresetManage();
   const pop = document.createElement("div");
@@ -392,8 +393,11 @@ async function presetManage() {
   $("h-preset-new").onclick = () => presetEditor(null);
   pop.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePresetManage(); $("h-preset-manage").focus(); } });
   try {
-    const [{presets}, {tools}] = await Promise.all([hget("harness/presets"), hget("harness/tools")]);
+    const [{presets}, {tools}, skills] = await Promise.all([
+      hget("harness/presets"), hget("harness/tools"),
+      hget("harness/skills").catch(() => ({skills: []}))]);   // ADR-0018: hint only, never blocks the panel
     PRESET_TOOLS = tools;
+    SKILL_NAMES = skills.skills.map((s) => s.name);
     const rows = $("h-preset-rows");
     rows.innerHTML = "";
     for (const p of presets) {
@@ -601,6 +605,9 @@ function presetEditor(preset) {
     `<input class="st-input" id="h-pe-desc" value="${esc((preset && preset.description) || "")}">` +
     `<label class="muted small" for="h-pe-persona">persona (system prompt)</label>` +
     `<textarea class="st-input" id="h-pe-persona" rows="4">${esc((preset && preset.persona) || "")}</textarea>` +
+    `<label class="muted small" for="h-pe-skills">skills (comma-separated names; empty = all visible)</label>` +
+    `<input class="st-input" id="h-pe-skills" value="${esc(((preset && preset.skills) || []).join(", "))}"` +
+    ` placeholder="${esc(SKILL_NAMES.join(", ") || "leave empty for all")}">` +
     `<span class="muted small">tools: allow = only these run; deny = these never run</span>` +
     `<div class="harness-preset-tools" id="h-pe-tools"></div>` +
     `<div class="harness-popover__actions">` +
@@ -630,6 +637,10 @@ function presetEditor(preset) {
     try {
       await hpost("harness/presets", {name, description: $("h-pe-desc").value.trim() || null,
                                       persona: $("h-pe-persona").value.trim() || null,
+                                      skills: (() => {
+                                        const s = $("h-pe-skills").value.split(",").map((x) => x.trim()).filter(Boolean);
+                                        return s.length ? s : null;   // ADR-0018: null = all visible
+                                      })(),
                                       tools: {allow: [...a], deny: [...dn]}});
       unmountPopover(pop);
       pop.remove();

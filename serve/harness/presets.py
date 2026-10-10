@@ -44,11 +44,15 @@ class Preset:
     allow: list[str] = field(default_factory=list)   # empty = all
     deny: list[str] = field(default_factory=list)
     description: str | None = None
+    skills: list[str] | None = None                  # ADR-0018: None = all visible
 
     def permits(self, tool_name: str) -> bool:
         if self.allow and tool_name not in self.allow:
             return False
         return tool_name not in self.deny
+
+    def permits_skill(self, skill_name: str) -> bool:
+        return self.skills is None or skill_name in self.skills
 
     def section(self) -> str | None:
         """The persona rides system_sections (ADR-0007): prompt-only."""
@@ -74,8 +78,13 @@ def _parse(path: Path) -> tuple[Preset, str | None]:
         description = doc.get("description")
         if description is not None and not isinstance(description, str):
             raise ValueError("preset 'description' must be a string")
+        skills = doc.get("skills")
+        if skills is not None and (not isinstance(skills, list)
+                                   or not all(isinstance(s, str) for s in skills)):
+            raise ValueError("preset 'skills' must be a list of names")
         return Preset(name=str(doc.get("name") or path.stem), persona=persona,
-                      allow=allow, deny=deny, description=description), None
+                      allow=allow, deny=deny, description=description,
+                      skills=[str(s) for s in skills] if skills is not None else None), None
     except Exception as exc:  # noqa: BLE001 - fail closed
         return DEFAULT_PRESET, f"preset {path.stem!r} is malformed ({exc}): using default"
 
@@ -142,7 +151,8 @@ def _check_name(name: str) -> str:
 
 
 def save_preset(presets_dir: Path | None, name: str, *, persona: str | None,
-                allow: list[str], deny: list[str], description: str | None = None) -> Path:
+                allow: list[str], deny: list[str], description: str | None = None,
+                skills: list[str] | None = None) -> Path:
     """Write a preset into the USER dir (bundled files stay read-only, ADR-0011)."""
     _check_name(name)
     if name == "default":
@@ -160,6 +170,8 @@ def save_preset(presets_dir: Path | None, name: str, *, persona: str | None,
             doc["tools"]["allow"] = list(allow)
         if deny:
             doc["tools"]["deny"] = list(deny)
+    if skills is not None:
+        doc["skills"] = list(skills)              # ADR-0018: explicit allowlist
     path = directory / f"{name}.yaml"
     path.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return path

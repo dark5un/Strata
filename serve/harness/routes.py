@@ -111,7 +111,8 @@ def handle_get(handler, svc, path: str) -> None:
             return
         preset, _warning = load_preset(name, mgr.presets_dir)
         handler._json(200, {"name": preset.name, "persona": preset.persona, "description": preset.description,
-                            "tools": {"allow": preset.allow, "deny": preset.deny}, "source": source})
+                            "tools": {"allow": preset.allow, "deny": preset.deny},
+                            "skills": preset.skills, "source": source})
         return
     if rest == "tools":
         # the live registry's tool names: the preset editor's checkboxes (ADR-0011)
@@ -213,6 +214,15 @@ def handle_get(handler, svc, path: str) -> None:
             if mgr.metrics_fn is not None else None
         handler._json(200, {"events": rows, "pending": pending, "last_seq": live.handle.last_seq,
                             "busy": live.busy, "policy": policy_json, "context": ctx})
+        return
+    if rest == "skills":
+        # ADR-0018: the store listing (operator visibility + the preset
+        # editor's name hints). Names + descriptions only, never bodies.
+        from .skills import scan_skills
+        store, warns = scan_skills(mgr.skills_dir)
+        handler._json(200, {"dir": str(mgr.skills_dir),
+                            "skills": [{"name": s["name"], "description": s["description"]} for s in store],
+                            "warnings": warns})
         return
     if rest == "session/stats":
         # M11a (ADR-0017): the observability fold — read + render only.
@@ -333,9 +343,14 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
                 raise ValueError("presets: persona must be a string")
             if description is not None and not isinstance(description, str):
                 raise ValueError("presets: description must be a string")
+            skills = req.get("skills")            # ADR-0018: null = all visible
+            if skills is not None and (not isinstance(skills, list)
+                                       or not all(isinstance(s, str) for s in skills)):
+                raise ValueError("presets: skills must be a list of names or null")
             pfile = save_preset(mgr.presets_dir, name.strip(), persona=persona,
                                 allow=[str(t) for t in allow], deny=[str(t) for t in deny],
-                                description=description)
+                                description=description,
+                                skills=[str(s) for s in skills] if skills is not None else None)
             handler._json(200, {"ok": True, "name": name.strip(), "path": str(pfile)})
             return
         if rest == "presets/delete":

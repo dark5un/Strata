@@ -338,6 +338,27 @@ class SessionCommandTests(RoutesBase):
         code, _ = self.get("/harness/session/stats?session=nope")
         self.assertEqual(code, 404)
 
+    def test_skills_route_lists_the_store(self):
+        # ADR-0018: names + descriptions only, never bodies
+        (self.root / "skills" / "demo-skill").mkdir(parents=True)
+        (self.root / "skills" / "demo-skill" / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: a demo.\n---\nsecret body", encoding="utf-8")
+        self.mgr.skills_dir = self.root / "skills"
+        code, body = self.get("/harness/skills")
+        self.assertEqual(code, 200)
+        self.assertEqual([s["name"] for s in body["skills"]], ["demo-skill"])
+        self.assertNotIn("secret body", json.dumps(body))
+
+    def test_preset_skills_gate_roundtrip(self):
+        # ADR-0018: the preset editor's skills list rides save + read
+        code, _ = self.post("/harness/presets", {"name": "gated", "skills": ["demo-skill"]})
+        self.assertEqual(code, 200)
+        code, body = self.get("/harness/preset?name=gated")
+        self.assertEqual(code, 200)
+        self.assertEqual(body["skills"], ["demo-skill"])
+        code, _ = self.post("/harness/presets", {"name": "bad", "skills": "not-a-list"})
+        self.assertEqual(code, 400)
+
     def test_session_roots_roundtrip_and_fork_narrowing(self):
         # M9: roots ride the create call, show in the list, and a fork may
         # narrow but never widen them.
