@@ -4,6 +4,10 @@ read is ungated; write and edit are approval-gated by the registry. When the
 registry passes root=, every path must resolve inside it (the harness's
 workspace fence); with root=None the operator accepted the full-RCE surface
 (same posture as dsh's loopback fence — the server binds 127.0.0.1).
+
+M9 (ADR-0015): root= may be a LIST of trusted roots — a path is inside the
+fence if it resolves inside ANY of them (or equals one). The escape error
+names every root so the agent learns the boundary from the tool error.
 """
 from __future__ import annotations
 
@@ -15,25 +19,33 @@ MAX_READ_LINES = 2000
 MAX_READ_CHARS = 100_000
 
 
-def _resolve(path: str, root: Path | None) -> Path:
+def _norm_roots(root) -> list[Path] | None:
+    """Normalise the fence argument: one root, a list of roots, or None."""
+    if root is None:
+        return None
+    roots = root if isinstance(root, (list, tuple)) else [root]
+    return [Path(r).resolve() for r in roots]
+
+
+def _inside(p: Path, roots: list[Path]) -> bool:
+    return any(roots_r == p or roots_r in p.parents for roots_r in roots)
+
+
+def _resolve(path: str, root) -> Path:
     p = Path(path).expanduser()
+    roots = _norm_roots(root)
     if not p.is_absolute():
-        p = (root or Path.cwd()) / p
+        p = ((roots[0] if roots else None) or Path.cwd()) / p
     p = p.resolve()
-    if root is not None:
-        root = root.resolve()
-        if root != p and root not in p.parents:
-            raise ValueError(f"path {path!r} escapes the workspace root {root}")
+    if roots is not None and not _inside(p, roots):
+        raise ValueError(f"path {path!r} escapes the trusted roots {', '.join(str(r) for r in roots)}")
     return p
 
 
-def read_tool(root: str | Path | None = None) -> ToolDefinition:
+def read_tool(root=None) -> ToolDefinition:
     def execute(args: dict, ctx) -> dict:
         try:
-            p = Path(str(args["path"])).expanduser()
-            if not p.is_absolute():
-                p = (Path(root).resolve() if root else Path.cwd()) / p
-            path = p.resolve()
+            path = _resolve(str(args["path"]), root)
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             return {"text": f"read failed: {exc}", "is_error": True}
@@ -59,10 +71,10 @@ def read_tool(root: str | Path | None = None) -> ToolDefinition:
         execute=execute, concurrency_safe=True)
 
 
-def write_tool(root: str | Path | None = None) -> ToolDefinition:
+def write_tool(root=None) -> ToolDefinition:
     def execute(args: dict, ctx) -> dict:
         try:
-            path = _resolve(str(args["path"]), Path(root) if root else None)
+            path = _resolve(str(args["path"]), root)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(str(args["content"]), encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
@@ -77,10 +89,10 @@ def write_tool(root: str | Path | None = None) -> ToolDefinition:
         execute=execute, concurrency_safe=False)
 
 
-def edit_tool(root: str | Path | None = None) -> ToolDefinition:
+def edit_tool(root=None) -> ToolDefinition:
     def execute(args: dict, ctx) -> dict:
         try:
-            path = _resolve(str(args["path"]), Path(root) if root else None)
+            path = _resolve(str(args["path"]), root)
             text = path.read_text(encoding="utf-8")
             old, new = str(args["old_string"]), str(args["new_string"])
             replace_all = bool(args.get("replace_all"))

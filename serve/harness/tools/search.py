@@ -17,10 +17,15 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "target", "dist", "
 MAX_RESULTS = 200
 
 
-def search_tool(root: str | Path | None = None) -> ToolDefinition:
+def search_tool(root=None) -> ToolDefinition:
     def execute(args: dict, ctx) -> dict:
         pattern = str(args["pattern"])
-        base = Path(args.get("path") or root or Path.cwd()).resolve()
+        from .fs import _inside, _norm_roots
+        fence = _norm_roots(root)
+        base = Path(args.get("path") or (fence[0] if fence else None) or Path.cwd()).resolve()
+        if fence is not None and not _inside(base, fence):
+            return {"text": f"search path {str(base)!r} escapes the trusted roots "
+                            f"{', '.join(str(r) for r in fence)}", "is_error": True}
         glob_filter = args.get("file_glob")
         try:
             rx = re.compile(pattern)

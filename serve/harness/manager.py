@@ -27,7 +27,7 @@ from .inbox import Inbox
 from .loop import Loop
 from .modes import GOAL_PHASES, fold_goal, fold_plan, goal_rounds_used, goal_section, plan_section
 from .presets import load_preset
-from .session import SessionHandle, create, fork, open_session, repair_interrupted
+from .session import SessionHandle, create, fork, open_session, repair_interrupted, trusted_roots_of
 from .spill import SpillStore
 from .subagents import budget_check, child_result_text, delegate_tool
 from .tools import default_registry
@@ -98,9 +98,35 @@ class HarnessManager:
 
     # ---------------------------------------------------------------- lifecycle
 
-    def new(self, session_id: str | None = None, *, preset: str = "default") -> str:
-        h = create(self.dir, session_id, cwd=str(self.workspace_root or Path.cwd()), agent_preset=preset)
+    def new(self, session_id: str | None = None, *, preset: str = "default",
+            roots: list[str] | None = None) -> str:
+        # M9 (ADR-0015): roots = the session's trusted folders (subfolders
+        # included). Validated at creation: each must exist and be a directory
+        # (the fence resolves paths against them; a typo'd root would silently
+        # deny everything otherwise). None = today's server-default workspace.
+        trusted: list[str] | None = None
+        if roots is not None:
+            if not isinstance(roots, list) or not roots:
+                raise ValueError("roots: a non-empty list of folder paths")
+            out = []
+            for r in roots:
+                p = Path(str(r)).expanduser().resolve()
+                if not p.is_dir():
+                    raise ValueError(f"trusted root {str(r)!r} is not a directory")
+                out.append(str(p))
+            trusted = out
+        h = create(self.dir, session_id, cwd=str(self.workspace_root or Path.cwd()), agent_preset=preset,
+                   trusted_roots=trusted)
         return h.header["id"]
+
+    def _session_roots(self, h) -> list[str] | None:
+        """The fence for one session: its trusted roots (M9), read-compat to
+        [header.cwd]; None only when the header carries no cwd at all
+        (the operator's full-surface posture, unchanged)."""
+        roots = trusted_roots_of(h.header)
+        if roots is None:
+            return None
+        return [str(Path(r).expanduser().resolve()) for r in roots]
 
     def list_sessions(self) -> list[dict]:
         out = []
@@ -113,6 +139,7 @@ class HarnessManager:
                 out.append({"id": sid, "busy": live.busy, "events": len(live.handle.events),
                             "origin": h.get("origin", "user"), "parent": h.get("parentSession"),
                             "preset": h.get("agentPreset", "default"),
+                            "roots": trusted_roots_of(h),   # M9: the list's workspace sub-badge
                             "title": _session_title(live.handle.events)})
                 continue
             try:
@@ -123,6 +150,7 @@ class HarnessManager:
             out.append({"id": sid, "busy": False, "events": len(h.events),
                         "origin": h.header.get("origin", "user"), "parent": h.header.get("parentSession"),
                         "preset": h.header.get("agentPreset", "default"),
+                        "roots": trusted_roots_of(h.header),   # M9: the list's workspace sub-badge
                         "title": _session_title(h.events)})
         return out
 
@@ -176,7 +204,15 @@ class HarnessManager:
                         parent_effective = {n for n in names if ppreset.permits(n)}
                 except Exception:  # noqa: BLE001 - unreadable parent log: no extra restriction
                     pass
-        tools = {t.name: t for t in default_registry(board=board, root=self.workspace_root)}
+        tools = {t.name: t for t in default_registry(board=board, root=self._session_roots(h))}
+        # M9: the shell's default cwd is the session's FIRST trusted root;
+        # an explicit cwd argument is fenced to the roots inside the tool.
+        roots = self._session_roots(h)
+        if roots:
+            shell = tools.get("shell")
+            if shell is not None:
+                from .tools.shell import shell_tool
+                tools["shell"] = shell_tool(cwd=roots[0], roots=roots)
         if self.mcp_hub is not None:
             # ADR-0012: the hub's ready tools join the registry, gated like any
             # machine tool; snapshot at attach (no hot-reload mid-session).
@@ -253,9 +289,12 @@ class HarnessManager:
         h.on_append = live.publish                # every durable row streams the moment it lands
         return live
 
-    def fork(self, session_id: str, boundary_seq: int | None = None) -> str:
+    def fork(self, session_id: str, boundary_seq: int | None = None,
+             roots: list[str] | None = None) -> str:
+        # M9: a fork inherits the parent's trusted roots; `roots` may narrow
+        # them (session.fork rejects any widening).
         src = open_session(self.dir, session_id)
-        child = fork(self.dir, src, boundary_seq)
+        child = fork(self.dir, src, boundary_seq, trusted_roots=roots)
         return child.header["id"]
 
     # ---------------------------------------------------------------- commands
@@ -396,7 +435,10 @@ class HarnessManager:
         child = create(self.dir, cwd=str(self.workspace_root or Path.cwd()),
                        origin="subagent", parent_session=parent_id,
                        delegation_depth=int(parent.handle.header.get("delegationDepth", 0)) + 1,
-                       agent_preset=preset)
+                       agent_preset=preset,
+                       # M9: subagents inherit the parent's trusted roots —
+                       # a child can never widen the fence it was born inside.
+                       trusted_roots=trusted_roots_of(parent.handle.header))
         child_id = child.header["id"]
         # create() already wrote the header row to disk; _attach reopens the log
         parent.handle.append(ev.SUBAGENT_SPAWN, {"child": child_id, "preset": preset,

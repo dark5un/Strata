@@ -301,6 +301,43 @@ class SessionCommandTests(RoutesBase):
         self.assertIsNotNone(ev["context"])
         self.assertGreater(ev["context"]["estimate"], 0)
 
+    def test_session_roots_roundtrip_and_fork_narrowing(self):
+        # M9: roots ride the create call, show in the list, and a fork may
+        # narrow but never widen them.
+        ws = self.root / "ws"
+        (ws / "proj").mkdir(parents=True)
+        code, created = self.post("/harness/session", {"roots": [str(ws)]})
+        self.assertEqual(code, 200)
+        sid = created["id"]
+        _, listing = self.get("/harness/sessions")
+        row = next(s for s in listing["sessions"] if s["id"] == sid)
+        self.assertEqual(row["roots"], [str(ws.resolve())])
+        code, bad = self.post("/harness/session", {"roots": [str(self.root / "nope")]})
+        self.assertEqual(code, 400)                       # not a directory
+        self.assertIn("not a directory", bad["error"]["message"])
+        code, wide = self.post(f"/harness/session/{sid}/fork",
+                               {"roots": [str(self.root / "outside")]})
+        self.assertEqual(code, 400)                       # widening refused
+        code, ok = self.post(f"/harness/session/{sid}/fork", {"roots": [str(ws / "proj")]})
+        self.assertEqual(code, 200)
+        _, listing = self.get("/harness/sessions")
+        row = next(s for s in listing["sessions"] if s["id"] == ok["id"])
+        self.assertEqual(row["roots"], [str((ws / "proj").resolve())])
+
+    def test_ls_lists_directories_only(self):
+        # M9 security contract: the picker route never discloses file names
+        # or contents — a file path is refused, files inside a dir are skipped.
+        ws = self.root / "lsws"
+        (ws / "sub").mkdir(parents=True)
+        (ws / "secret.txt").write_text("do not disclose")
+        code, d = self.get(f"/harness/ls?path={ws}")
+        self.assertEqual(code, 200)
+        self.assertEqual([e["name"] for e in d["dirs"]], ["sub"])
+        self.assertNotIn("secret.txt", json.dumps(d))
+        code, err = self.get(f"/harness/ls?path={ws / 'secret.txt'}")
+        self.assertEqual(code, 400)                       # refuses non-dir disclosure
+        self.assertIn("not a directory", err["error"]["message"])
+
 
 
 class PluginRouteTests(RoutesBase):

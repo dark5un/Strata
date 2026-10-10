@@ -58,7 +58,7 @@ class FsTests(unittest.TestCase):
             _resolve("../../etc/passwd", self.root)
         r = write_tool(self.root).execute({"path": "../escape.txt", "content": "x"}, self.ctx)
         self.assertTrue(r["is_error"])
-        self.assertIn("escapes the workspace root", r["text"])
+        self.assertIn("escapes the trusted roots", r["text"])
 
     def test_read_pagination(self):
         f = self.root / "c.txt"
@@ -93,6 +93,74 @@ class ShellTests(unittest.TestCase):
     def test_output_capped(self):
         r = shell_tool(cwd=self._tmp.name).execute({"command": "yes x | head -c 100000"}, self.ctx)
         self.assertIn("truncated", r["text"])
+
+
+class TrustedRootsTests(unittest.TestCase):
+    """M9 (ADR-0015): per-session trusted workspaces — the multi-root fence."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.a = base / "a"
+        self.b = base / "b"
+        (self.a / "sub").mkdir(parents=True)
+        self.b.mkdir()
+        self.outside = base / "outside"
+        self.outside.mkdir()
+        self.s = create(base / "sessions")
+        self.ctx = ctx_for(self.s)
+        self.roots = [self.a, self.b]
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_multi_root_accepts_either(self):
+        for r in (write_tool(self.roots).execute({"path": str(self.a / "x.txt"), "content": "1"}, self.ctx),
+                  write_tool(self.roots).execute({"path": str(self.b / "y.txt"), "content": "2"}, self.ctx),
+                  write_tool(self.roots).execute({"path": str(self.a / "sub" / "z.txt"), "content": "3"}, self.ctx)):
+            self.assertFalse(r.get("is_error"), r["text"])
+
+    def test_escape_names_all_roots(self):
+        r = write_tool(self.roots).execute({"path": str(self.outside / "no.txt"), "content": "x"}, self.ctx)
+        self.assertTrue(r["is_error"])
+        self.assertIn("escapes the trusted roots", r["text"])
+        self.assertIn(str(self.a), r["text"])          # the agent learns the boundary
+        self.assertIn(str(self.b), r["text"])
+
+    def test_symlink_escape_blocked(self):
+        link = self.a / "link"
+        link.symlink_to(self.outside)
+        r = write_tool(self.roots).execute({"path": str(link / "evil.txt"), "content": "x"}, self.ctx)
+        self.assertTrue(r["is_error"])                  # resolved before the check
+        self.assertFalse((self.outside / "evil.txt").exists())
+
+    def test_read_fenced_too(self):
+        (self.outside / "secret.txt").write_text("s")
+        r = read_tool(self.roots).execute({"path": str(self.outside / "secret.txt")}, self.ctx)
+        self.assertTrue(r["is_error"])
+        self.assertIn("escapes the trusted roots", r["text"])
+
+    def test_relative_paths_resolve_against_first_root(self):
+        r = write_tool(self.roots).execute({"path": "rel.txt", "content": "x"}, self.ctx)
+        self.assertFalse(r.get("is_error"), r["text"])
+        self.assertTrue((self.a / "rel.txt").exists())
+
+    def test_shell_cwd_fenced(self):
+        r = shell_tool(cwd=self.a, roots=self.roots).execute(
+            {"command": "pwd"}, self.ctx)
+        self.assertIn(str(self.a), r["text"])           # default: first root
+        r = shell_tool(cwd=self.a, roots=self.roots).execute(
+            {"command": "pwd", "cwd": str(self.b)}, self.ctx)
+        self.assertIn(str(self.b), r["text"])           # inside another root: allowed
+        r = shell_tool(cwd=self.a, roots=self.roots).execute(
+            {"command": "pwd", "cwd": str(self.outside)}, self.ctx)
+        self.assertTrue(r["is_error"])
+        self.assertIn("escapes the trusted roots", r["text"])
+
+    def test_search_path_fenced(self):
+        r = search_tool(self.roots).execute({"pattern": "needle", "path": str(self.outside)}, self.ctx)
+        self.assertTrue(r["is_error"])
+        self.assertIn("escapes the trusted roots", r["text"])
 
 
 class SearchTests(unittest.TestCase):

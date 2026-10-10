@@ -91,7 +91,8 @@ def new_session_id() -> str:
 
 def create(sessions_dir: Path, session_id: str | None = None, *, cwd: str = "",
            origin: str = "user", parent_session: str | None = None,
-           delegation_depth: int = 0, agent_preset: str = "default") -> SessionHandle:
+           delegation_depth: int = 0, agent_preset: str = "default",
+           trusted_roots: list[str] | None = None) -> SessionHandle:
     sessions_dir.mkdir(parents=True, exist_ok=True)
     session_id = session_id or new_session_id()
     path = sessions_dir / f"{session_id}.jsonl"
@@ -106,9 +107,24 @@ def create(sessions_dir: Path, session_id: str | None = None, *, cwd: str = "",
         "delegationDepth": delegation_depth,
         "agentPreset": agent_preset,
     }
+    if trusted_roots:
+        # M9 (ADR-0015): per-session trusted workspaces. Additive field: old
+        # headers read as [cwd] (see trusted_roots_of) — no migration.
+        header["trustedRoots"] = list(trusted_roots)
     path.write_text(json.dumps({"type": "session/header", "seq": -1, "time": None, "data": header}) + "\n",
                     encoding="utf-8")
     return SessionHandle(path, header, [])
+
+
+def trusted_roots_of(header: dict) -> list[str] | None:
+    """The session's trusted roots, read-compat: no field = the old single
+    root (header.cwd); empty cwd = None = the operator's full-surface mode
+    (today's root=None posture, unchanged)."""
+    roots = header.get("trustedRoots")
+    if isinstance(roots, list) and roots:
+        return [str(r) for r in roots]
+    cwd = str(header.get("cwd") or "")
+    return [cwd] if cwd else None
 
 
 def open_session(sessions_dir: Path, session_id: str) -> SessionHandle:
@@ -176,8 +192,14 @@ def repair_interrupted(handle: SessionHandle) -> list[dict]:
 
 
 def fork(sessions_dir: Path, source: SessionHandle, boundary_seq: int | None = None,
-         child_id: str | None = None) -> SessionHandle:
-    """Deep-copy an exact event prefix (must end outside an open turn), mark the seed."""
+         child_id: str | None = None,
+         trusted_roots: list[str] | None = None) -> SessionHandle:
+    """Deep-copy an exact event prefix (must end outside an open turn), mark the seed.
+
+    M9 (ADR-0015): the child inherits the parent's trusted roots; a fork may
+    NARROW them at creation (a subset), never widen: anything outside the
+    parent's set is rejected here.
+    """
     prefix = [r for r in source.events if boundary_seq is None or r["seq"] <= boundary_seq]
     depth = 0
     for row in prefix:
@@ -187,11 +209,25 @@ def fork(sessions_dir: Path, source: SessionHandle, boundary_seq: int | None = N
             depth -= 1
     if depth != 0:
         raise ValueError("fork boundary must end outside an open turn")
+    parent_roots = trusted_roots_of(source.header)
+    if trusted_roots is None:
+        roots = parent_roots
+    else:
+        if parent_roots is None:
+            roots = list(trusted_roots)          # full-surface parent: the fork may set roots
+        else:
+            pr = {str(Path(p).resolve()) for p in parent_roots}
+            for r in trusted_roots:
+                rp = Path(str(r)).resolve()
+                if not any(str(rp) == p or Path(p) in rp.parents for p in pr):
+                    raise ValueError(f"fork roots may only narrow the parent's: {r!r} is outside {sorted(pr)}")
+            roots = list(trusted_roots)
     child = create(sessions_dir, child_id, cwd=source.header.get("cwd", ""),
                    origin=source.header.get("origin", "user"),
                    parent_session=source.header["id"],
                    delegation_depth=int(source.header.get("delegationDepth", 0)),
-                   agent_preset=source.header.get("agentPreset", "default"))
+                   agent_preset=source.header.get("agentPreset", "default"),
+                   trusted_roots=roots)
     renumbered = []
     for seq, row in enumerate(prefix):
         new_row = dict(row)

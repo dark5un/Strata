@@ -18,6 +18,7 @@ from .session import (
     fork,
     open_session,
     repair_interrupted,
+    trusted_roots_of,
 )
 
 
@@ -122,6 +123,35 @@ class SessionTests(unittest.TestCase):
         h.flush()
         with self.assertRaises(ValueError):
             fork(self.dir, h)
+
+    def test_trusted_roots_read_compat(self):
+        # M9: an old header (no trustedRoots) reads as [cwd]; no cwd = None
+        # (the operator's full-surface posture, unchanged).
+        old = create(self.dir, "old", cwd="/srv/ws")
+        self.assertEqual(trusted_roots_of(old.header), ["/srv/ws"])
+        bare = create(self.dir, "bare")
+        self.assertIsNone(trusted_roots_of(bare.header))
+        new = create(self.dir, "new", cwd="/srv/ws", trusted_roots=["/data/a", "/data/b"])
+        self.assertEqual(trusted_roots_of(new.header), ["/data/a", "/data/b"])
+        # the field survives a reopen (it is the header row, durable)
+        again = open_session(self.dir, "new")
+        self.assertEqual(trusted_roots_of(again.header), ["/data/a", "/data/b"])
+
+    def test_fork_inherits_and_narrows_roots(self):
+        # M9: a fork inherits the parent's roots; it may narrow them at
+        # creation, never widen.
+        (self.dir / "a").mkdir()
+        (self.dir / "a" / "inner").mkdir()
+        (self.dir / "b").mkdir()
+        h = create(self.dir, "p9", cwd="/srv", trusted_roots=[str(self.dir / "a"), str(self.dir / "b")])
+        h.append(ev.USER_MESSAGE, {"content": "one"})
+        h.flush()
+        kid = fork(self.dir, h, child_id="kid9")
+        self.assertEqual(trusted_roots_of(kid.header), [str(self.dir / "a"), str(self.dir / "b")])
+        narrow = fork(self.dir, h, child_id="narrow", trusted_roots=[str(self.dir / "a" / "inner")])
+        self.assertEqual(trusted_roots_of(narrow.header), [str(self.dir / "a" / "inner")])
+        with self.assertRaises(ValueError):        # widening refused
+            fork(self.dir, h, child_id="wide", trusted_roots=[str(self.dir / "c")])
 
     def test_surface_replace_shadows_span(self):
         h = create(self.dir, "s8")

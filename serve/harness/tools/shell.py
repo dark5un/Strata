@@ -1,7 +1,8 @@
 """serve/harness/tools/shell.py — the shell tool (approval-gated).
 
 subprocess with a hard timeout; output capped; the cancel event from the loop
-kills the child. cwd defaults to the session's workspace root.
+kills the child. cwd defaults to the session's FIRST trusted root (M9); an
+explicit cwd argument is fenced to the trusted roots like every other path.
 """
 from __future__ import annotations
 
@@ -9,14 +10,24 @@ import subprocess
 from pathlib import Path
 
 from ..loop import Cancelled, ToolDefinition
+from .fs import _norm_roots
 
 MAX_OUTPUT_CHARS = 50_000
 
 
-def shell_tool(timeout_s: float = 120.0, cwd: str | Path | None = None) -> ToolDefinition:
+def shell_tool(timeout_s: float = 120.0, cwd: str | Path | None = None, roots=None) -> ToolDefinition:
     def execute(args: dict, ctx) -> dict:
         command = str(args["command"])
         workdir = str(args.get("cwd") or cwd or Path.cwd())
+        fence = _norm_roots(roots if roots is not None else cwd)
+        if fence is not None:
+            wd = Path(workdir).expanduser()
+            wd = wd if wd.is_absolute() else fence[0] / wd
+            wd = wd.resolve()
+            if not any(r == wd or r in wd.parents for r in fence):
+                return {"text": f"shell cwd {workdir!r} escapes the trusted roots "
+                                f"{', '.join(str(r) for r in fence)}", "is_error": True}
+            workdir = str(wd)
         try:
             proc = subprocess.run(
                 ["bash", "-c", command], cwd=workdir, capture_output=True, text=True,

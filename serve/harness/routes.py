@@ -49,6 +49,52 @@ def handle_get(handler, svc, path: str) -> None:
     if rest == "sessions":
         handler._json(200, {"sessions": mgr.list_sessions()})
         return
+    if rest == "ls":
+        # M9 (ADR-0015): the workspace picker's directory tree. Directories
+        # ONLY: names + a has-more flag, never file contents, never file
+        # names. The API key gates it like every other harness route; the
+        # listing is bounded (cap + hidden/system dirs skipped) so it cannot
+        # be used to slurp a whole filesystem in one call.
+        from pathlib import Path as _P
+        raw = (query.get("path") or [""])[0]
+        base = _P(raw).expanduser() if raw else _P("/")
+        try:
+            base_r = base.resolve()
+        except OSError:
+            _bad(handler, 400, "ls: unreadable path")
+            return
+        if not base_r.is_dir():
+            # a file (or anything not a directory) discloses nothing: the
+            # route's contract is directories-only (security sweep 2026-10-09)
+            _bad(handler, 400, "ls: not a directory")
+            return
+        cap = 500
+        entries = []
+        try:
+            it = base_r.iterdir()
+            while True:
+                try:
+                    e = next(it)
+                except StopIteration:
+                    break
+                except OSError:
+                    continue
+                name = e.name
+                if name.startswith(".") or name in {"proc", "sys", "dev", "run", "tmp"}:
+                    continue
+                try:
+                    if not e.is_dir():
+                        continue
+                except OSError:
+                    continue
+                entries.append({"name": name, "path": str(e)})
+                if len(entries) >= cap:
+                    break
+        except OSError as exc:
+            _bad(handler, 403, f"ls: {exc.strerror or 'not readable'}")
+            return
+        handler._json(200, {"path": str(base_r), "dirs": entries, "truncated": len(entries) >= cap})
+        return
     if rest == "presets":
         from .presets import list_presets
         handler._json(200, {"presets": list_presets(mgr.presets_dir)})
@@ -250,7 +296,10 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
             preset = req.get("preset", "default")
             if not isinstance(preset, str) or not preset.strip():
                 raise ValueError("session: preset must be a name string")
-            handler._json(200, {"id": mgr.new(preset=preset.strip())})
+            roots = req.get("roots")
+            if roots is not None and not isinstance(roots, list):
+                raise ValueError("session: roots must be a list of folder paths")
+            handler._json(200, {"id": mgr.new(preset=preset.strip(), roots=roots)})
             return
         if rest == "presets":
             # create/update in the USER dir (ADR-0011); the YAML file is the truth
@@ -325,7 +374,10 @@ def handle_post(handler, svc, path: str, req: dict) -> None:
                 boundary = req.get("boundary_seq")
                 if boundary is not None and (isinstance(boundary, bool) or not isinstance(boundary, int)):
                     raise ValueError("fork: boundary_seq must be an integer or null")
-                handler._json(200, {"id": mgr.fork(sid, boundary)})
+                roots = req.get("roots")
+                if roots is not None and not isinstance(roots, list):
+                    raise ValueError("fork: roots must be a list of folder paths")
+                handler._json(200, {"id": mgr.fork(sid, boundary, roots=roots)})
             elif action == "cancel":
                 handler._json(200, {"cancelled": mgr.cancel(sid)})
             elif action == "answer":
